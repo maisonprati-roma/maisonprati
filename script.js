@@ -27,8 +27,9 @@ const path = require('path');
     downloadPath: downloadPath
   });
   
-  // Carica lo scraper dal file esterno
-  const scraperCode = fs.readFileSync('./scraper.js', 'utf8');
+  // Carica e decodifica lo scraper
+  let scraperCode = fs.readFileSync('./scraper.js', 'utf8');
+  scraperCode = decodeURIComponent(scraperCode);
   
   // Apri il sito
   await page.goto('https://www.immobiliare.it/agenzie-immobiliari/438027/maison-prati-srl/', { waitUntil: 'networkidle2' });
