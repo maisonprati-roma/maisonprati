@@ -27,21 +27,34 @@ const path = require('path');
     downloadPath: downloadPath
   });
   
+  // Leggi l'URL dal file scrape.json
+  const config = JSON.parse(fs.readFileSync('./scrape.json', 'utf-8'));
+  const targetUrl = config.url;
+  
+  console.log('URL da scrapare:', targetUrl);
+  
   // Carica e decodifica lo scraper
   let scraperCode = fs.readFileSync('./scraper.js', 'utf8');
   scraperCode = decodeURIComponent(scraperCode);
   
   // Apri il sito
-  await page.goto('https://www.immobiliare.it/agenzie-immobiliari/438027/maison-prati-srl/', { waitUntil: 'networkidle2' });
+  await page.goto(targetUrl, { waitUntil: 'networkidle2' });
   console.log('Pagina caricata!');
   
   // Esegui lo scraper
   await page.evaluate(scraperCode);
   console.log('Scraping avviato!');
   
-  // Attendi completamento
-  await page.waitForTimeout(600000);
+  // Attendi che appaia il messaggio "finito" nell'overlay
+  await page.waitForFunction(() => {
+    const status = document.querySelector('#imm-scr-status');
+    return status && status.textContent.includes('finito');
+  }, { timeout: 3600000 });
   
   console.log('Scraping completato!');
+  
+  // Attendi qualche secondo per il download
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  
   await browser.close();
 })();
