@@ -1,0 +1,17 @@
+name: Apri Browser
+on: 
+  workflow_dispatch:
+
+jobs:
+  test-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Installa Puppeteer
+        run: npm install puppeteer
+      - name: Esegui script browser
+        run: node script.js
