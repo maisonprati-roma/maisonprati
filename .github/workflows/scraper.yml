@@ -67,14 +67,55 @@ jobs:
           console.log(`🚀 Avvio scraping immobiliare.it`);
           
           const browser = await chromium.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            headless: false,
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-blink-features=AutomationControlled',
+              '--disable-dev-shm-usage',
+              '--disable-web-security',
+              '--disable-features=IsolateOrigins,site-per-process',
+              '--window-size=1920,1080',
+              '--start-maximized'
+            ]
           });
           
           const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            userAgent: 'Mozilla/5.0',
             viewport: { width: 1920, height: 1080 },
-            locale: 'it-IT'
+            locale: 'it-IT',
+            timezoneId: 'Europe/Rome',
+            extraHTTPHeaders: {
+              'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+              'Accept-Encoding': 'gzip, deflate, br',
+              'DNT': '1',
+              'Connection': 'keep-alive',
+              'Upgrade-Insecure-Requests': '1',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'none',
+              'Sec-Fetch-User': '?1'
+            }
+          });
+          
+          // Rimuovi indicatori di automazione
+          await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => false
+            });
+            
+            window.chrome = {
+              runtime: {}
+            };
+            
+            Object.defineProperty(navigator, 'plugins', {
+              get: () => [1, 2, 3, 4, 5]
+            });
+            
+            Object.defineProperty(navigator, 'languages', {
+              get: () => ['it-IT', 'it', 'en-US', 'en']
+            });
           });
           
           const page = await context.newPage();
@@ -94,12 +135,33 @@ jobs:
           try {
             // Naviga alla pagina target
             console.log('🌐 Caricamento pagina immobiliare.it...');
+            
+            // Primo caricamento con delay naturale
             await page.goto(targetUrl, { 
-              waitUntil: 'domcontentloaded',
+              waitUntil: 'networkidle',
               timeout: 90000 
             });
             
-            console.log('⏳ Attendo rendering completo...');
+            console.log('⏳ Simulo comportamento umano...');
+            
+            // Simula movimenti del mouse casuali
+            for (let i = 0; i < 5; i++) {
+              const x = Math.floor(Math.random() * 1920);
+              const y = Math.floor(Math.random() * 1080);
+              await page.mouse.move(x, y);
+              await page.waitForTimeout(300 + Math.random() * 500);
+            }
+            
+            // Scroll casuale per simulare lettura umana
+            const scrollSteps = [200, 400, 600, 800, 400, 200, 0];
+            for (const scrollY of scrollSteps) {
+              await page.evaluate((y) => {
+                window.scrollTo({ top: y, behavior: 'smooth' });
+              }, scrollY);
+              await page.waitForTimeout(800 + Math.random() * 1200);
+            }
+            
+            // Attesa finale prima di iniziare lo scraping
             await page.waitForTimeout(3000);
             
             // Gestione cookie banner se presente
