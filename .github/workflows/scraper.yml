@@ -1,0 +1,342 @@
+name: Scraping Immobiliare.it
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scrape.json'
+      - 'scraper.js'
+  schedule:
+    - cron: '0 2 * * *'  # Esegui ogni giorno alle 2:00 AM
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install Playwright
+      run: |
+        npm install -D @playwright/test
+        npx playwright install chromium
+        npx playwright install-deps chromium
+    
+    - name: Create wrapper script
+      run: |
+        cat > run-scraper.js << 'EOF'
+        const { chromium } = require('playwright');
+        const fs = require('fs');
+        const path = require('path');
+        
+        (async () => {
+          // Leggi l'URL dal file scrape.json
+          const configPath = path.join(__dirname, 'scrape.json');
+          
+          if (!fs.existsSync(configPath)) {
+            console.error('❌ Errore: scrape.json non trovato!');
+            process.exit(1);
+          }
+          
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          const targetUrl = config.url;
+          
+          if (!targetUrl) {
+            console.error('❌ Errore: URL non trovato in scrape.json!');
+            process.exit(1);
+          }
+          
+          console.log(`📍 URL caricato da scrape.json: ${targetUrl}`);
+          
+          // Leggi il file scraper.js
+          const scraperPath = path.join(__dirname, 'scraper.js');
+          
+          if (!fs.existsSync(scraperPath)) {
+            console.error('❌ Errore: scraper.js non trovato!');
+            process.exit(1);
+          }
+          
+          const bookmarkletCode = fs.readFileSync(scraperPath, 'utf8');
+          console.log(`📄 Bookmarklet caricato (${bookmarkletCode.length} caratteri)`);
+          console.log(`🚀 Avvio scraping immobiliare.it`);
+          
+          const browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+          });
+          
+          const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1920, height: 1080 },
+            locale: 'it-IT'
+          });
+          
+          const page = await context.newPage();
+          
+          // Intercetta il download del file JSON
+          let downloadedData = null;
+          
+          page.on('download', async (download) => {
+            console.log('📥 Download intercettato:', await download.suggestedFilename());
+            const downloadPath = await download.path();
+            if (downloadPath && fs.existsSync(downloadPath)) {
+              downloadedData = fs.readFileSync(downloadPath, 'utf8');
+              console.log('✅ Dati dal download catturati');
+            }
+          });
+          
+          try {
+            // Naviga alla pagina target
+            console.log('🌐 Caricamento pagina immobiliare.it...');
+            await page.goto(targetUrl, { 
+              waitUntil: 'domcontentloaded',
+              timeout: 90000 
+            });
+            
+            console.log('⏳ Attendo rendering completo...');
+            await page.waitForTimeout(3000);
+            
+            // Gestione cookie banner se presente
+            try {
+              const cookieBtn = await page.locator('button:has-text("Accetta"), button:has-text("Acconsento")').first();
+              if (await cookieBtn.isVisible({ timeout: 2000 })) {
+                await cookieBtn.click();
+                console.log('🍪 Cookie banner gestito');
+                await page.waitForTimeout(1000);
+              }
+            } catch (e) {
+              console.log('ℹ️  Nessun cookie banner o già accettato');
+            }
+            
+            // Esegui il bookmarklet
+            console.log('⚙️  Esecuzione bookmarklet...');
+            console.log('📊 Lo scraping multi-pagina può richiedere diversi minuti...');
+            
+            // Esegui lo script e attendi che completi
+            await page.evaluate(bookmarkletCode);
+            
+            // Attendi che appaia l'overlay di completamento o timeout dopo 10 minuti
+            console.log('⏰ Attendo completamento scraping (max 10 minuti)...');
+            
+            try {
+              // Attendi che l'overlay mostri "finito"
+              await page.waitForFunction(() => {
+                const overlay = document.getElementById('imm-scr-status');
+                return overlay && overlay.textContent.includes('finito');
+              }, { timeout: 600000 }); // 10 minuti
+              
+              console.log('✅ Scraping completato!');
+            } catch (e) {
+              console.log('⚠️  Timeout scraping o completamento non rilevato');
+            }
+            
+            // Attendi eventuali download
+            await page.waitForTimeout(5000);
+            
+            // Prova a recuperare i dati dal localStorage
+            let scrapedData = null;
+            
+            try {
+              const storageData = await page.evaluate(() => {
+                const key = 'immobiliare_scrape_data_v3';
+                const data = localStorage.getItem(key);
+                return data ? JSON.parse(data) : null;
+              });
+              
+              if (storageData) {
+                scrapedData = storageData;
+                console.log(`✅ Dati recuperati da localStorage: ${scrapedData.length} immobili`);
+              }
+            } catch (e) {
+              console.log('⚠️  Impossibile recuperare dati da localStorage:', e.message);
+            }
+            
+            // Se abbiamo intercettato un download, usa quei dati
+            if (downloadedData) {
+              try {
+                scrapedData = JSON.parse(downloadedData);
+                console.log(`✅ Dati dal download: ${scrapedData.length} immobili`);
+              } catch (e) {
+                console.log('⚠️  Errore parsing download:', e.message);
+              }
+            }
+            
+            if (!scrapedData || scrapedData.length === 0) {
+              console.log('⚠️  Nessun dato estratto, salvo screenshot per debug');
+              await page.screenshot({ 
+                path: './debug_screenshot.png',
+                fullPage: true 
+              });
+              throw new Error('Nessun dato estratto dallo scraping');
+            }
+            
+            // Salva i dati
+            const outputDir = './scraped_data';
+            
+            if (!fs.existsSync(outputDir)) {
+              fs.mkdirSync(outputDir, { recursive: true });
+            }
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const outputFile = `${outputDir}/immobiliare_${timestamp}.json`;
+            
+            fs.writeFileSync(outputFile, JSON.stringify(scrapedData, null, 2));
+            console.log(`💾 Dati salvati in: ${outputFile}`);
+            
+            // Salva screenshot finale
+            const screenshotFile = `${outputDir}/screenshot_${timestamp}.png`;
+            await page.screenshot({ 
+              path: screenshotFile,
+              fullPage: false
+            });
+            console.log(`📸 Screenshot salvato in: ${screenshotFile}`);
+            
+            // Analisi dati
+            const withPrice = scrapedData.filter(i => i.price).length;
+            const withSurface = scrapedData.filter(i => i.surface).length;
+            const withPhoto = scrapedData.filter(i => i.photo).length;
+            
+            // Crea un file di riepilogo
+            const summary = {
+              url: targetUrl,
+              timestamp: new Date().toISOString(),
+              totalItems: scrapedData.length,
+              stats: {
+                withPrice,
+                withSurface,
+                withPhoto,
+                withMeta: scrapedData.filter(i => i.meta && i.meta.length).length,
+                withTags: scrapedData.filter(i => i.tag && i.tag.length).length
+              },
+              scraperFile: 'scraper.js',
+              configFile: 'scrape.json',
+              success: true
+            };
+            
+            fs.writeFileSync(
+              `${outputDir}/summary_${timestamp}.json`, 
+              JSON.stringify(summary, null, 2)
+            );
+            
+            // Crea file "latest" per accesso rapido
+            fs.writeFileSync(
+              `${outputDir}/immobiliare_latest.json`,
+              JSON.stringify(scrapedData, null, 2)
+            );
+            
+            fs.writeFileSync(
+              `${outputDir}/summary_latest.json`,
+              JSON.stringify(summary, null, 2)
+            );
+            
+            console.log('\n📊 Riepilogo:');
+            console.log(`   Totale immobili: ${scrapedData.length}`);
+            console.log(`   Con prezzo: ${withPrice}`);
+            console.log(`   Con superficie: ${withSurface}`);
+            console.log(`   Con foto: ${withPhoto}`);
+            console.log('\n✅ Scraping completato con successo!');
+            
+          } catch (error) {
+            console.error('❌ Errore durante lo scraping:', error);
+            
+            // Salva screenshot di errore
+            try {
+              await page.screenshot({ 
+                path: './error_screenshot.png',
+                fullPage: true 
+              });
+              console.log('📸 Screenshot di errore salvato');
+            } catch (e) {}
+            
+            // Salva l'errore
+            const outputDir = './scraped_data';
+            if (!fs.existsSync(outputDir)) {
+              fs.mkdirSync(outputDir, { recursive: true });
+            }
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const errorData = {
+              url: targetUrl,
+              timestamp: new Date().toISOString(),
+              error: error.message,
+              stack: error.stack
+            };
+            
+            fs.writeFileSync(
+              `${outputDir}/error_${timestamp}.json`,
+              JSON.stringify(errorData, null, 2)
+            );
+            
+            fs.writeFileSync(
+              `${outputDir}/error_latest.json`,
+              JSON.stringify(errorData, null, 2)
+            );
+            
+            process.exit(1);
+          } finally {
+            await browser.close();
+          }
+        })();
+        EOF
+    
+    - name: Verify required files
+      run: |
+        echo "🔍 Verifica file necessari..."
+        
+        if [ ! -f "scrape.json" ]; then
+          echo "❌ scrape.json non trovato"
+          exit 1
+        fi
+        echo "✅ scrape.json trovato"
+        
+        if [ ! -f "scraper.js" ]; then
+          echo "❌ scraper.js non trovato"
+          exit 1
+        fi
+        echo "✅ scraper.js trovato"
+        
+        echo ""
+        echo "📄 Configurazione (scrape.json):"
+        cat scrape.json | head -n 10
+    
+    - name: Execute scraping
+      run: node run-scraper.js
+      timeout-minutes: 15
+    
+    - name: Upload scraped data
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: immobiliare-data-${{ github.run_number }}
+        path: |
+          scraped_data/
+          error_screenshot.png
+          debug_screenshot.png
+        retention-days: 90
+    
+    - name: Show results summary
+      if: success()
+      run: |
+        echo ""
+        echo "📊 ===== RIEPILOGO SCRAPING ====="
+        if [ -f "scraped_data/summary_latest.json" ]; then
+          cat scraped_data/summary_latest.json
+        fi
+        echo ""
+        echo "📁 File generati:"
+        ls -lh scraped_data/ 2>/dev/null || echo "Nessun file"
+    
+    - name: Commit and push results
+      if: success()
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add scraped_data/*.json 2>/dev/null || true
+        git commit -m "🏠 Aggiornamento dati immobiliare.it - $(date +'%Y-%m-%d %H:%M:%S')" || true
+        git push || true
