@@ -51,11 +51,16 @@ jobs:
         echo "✅ Proxy SOCKS4: ${SOCKS4_COUNT}"
         echo "✅ Proxy SOCKS5: ${SOCKS5_COUNT}"
         
-        # Combina tutte le liste
-        cat http_proxies.txt https_proxies.txt > all_proxies.txt
+        # Combina tutte le liste (priorità HTTP/HTTPS)
+        cat http_proxies.txt https_proxies.txt socks4_proxies.txt socks5_proxies.txt > all_proxies.txt
+        
+        # Rimuovi duplicati
+        sort -u all_proxies.txt > all_proxies_unique.txt
+        mv all_proxies_unique.txt all_proxies.txt
         
         TOTAL=$(wc -l < all_proxies.txt)
-        echo "📊 Totale proxy disponibili: ${TOTAL}"
+        echo "📊 Totale proxy unici: ${TOTAL}"
+        echo "🎲 Con 200 tentativi e ~5-10% successo, probabilità >90% di trovarne uno funzionante"
     
     - name: Create proxy-aware scraper
       run: |
@@ -70,8 +75,8 @@ jobs:
         
         chromium.use(StealthPlugin());
         
-        // Funzione per testare un proxy
-        async function testProxy(proxy) {
+        // Funzione per testare un proxy (test leggero e veloce)
+        async function testProxy(proxy, timeout = 5000) {
           try {
             const testBrowser = await chromium.launch({
               headless: true,
@@ -82,9 +87,9 @@ jobs:
             const testContext = await testBrowser.newContext();
             const testPage = await testContext.newPage();
             
-            // Test veloce su un sito semplice
+            // Test velocissimo su un sito semplice
             await testPage.goto('https://api.ipify.org?format=json', { 
-              timeout: 10000,
+              timeout: timeout,
               waitUntil: 'domcontentloaded'
             });
             
@@ -95,34 +100,62 @@ jobs:
             const ipData = JSON.parse(content.match(/\{[^}]+\}/)[0]);
             return { working: true, ip: ipData.ip };
           } catch (e) {
+            try {
+              if (testBrowser) await testBrowser.close();
+            } catch (closeError) {}
             return { working: false, error: e.message };
           }
         }
         
-        // Funzione per trovare un proxy funzionante
-        async function findWorkingProxy(proxies, maxAttempts = 20) {
-          console.log(`🔍 Cerco un proxy funzionante (max ${maxAttempts} tentativi)...`);
+        // Test batch parallelo per velocizzare
+        async function testProxiesBatch(proxies, batchSize = 10) {
+          const promises = proxies.slice(0, batchSize).map(proxy => 
+            testProxy(proxy, 5000).then(result => ({ proxy, ...result }))
+          );
+          
+          const results = await Promise.allSettled(promises);
+          
+          return results
+            .filter(r => r.status === 'fulfilled' && r.value.working)
+            .map(r => r.value);
+        }
+        
+        // Funzione per trovare un proxy funzionante con strategia aggressiva
+        async function findWorkingProxy(proxies, maxAttempts = 200) {
+          console.log(`🔍 Cerco un proxy funzionante tra ${proxies.length} disponibili`);
+          console.log(`   Test paralleli: max ${maxAttempts} tentativi`);
           
           // Shuffle proxies per varietà
           const shuffled = proxies.sort(() => Math.random() - 0.5);
           
-          for (let i = 0; i < Math.min(maxAttempts, shuffled.length); i++) {
-            const proxy = shuffled[i].trim();
-            if (!proxy) continue;
+          let tested = 0;
+          const batchSize = 10;
+          
+          // Testa in batch paralleli per velocizzare
+          while (tested < Math.min(maxAttempts, shuffled.length)) {
+            const batch = shuffled.slice(tested, tested + batchSize)
+              .map(p => p.trim())
+              .filter(p => p);
             
-            console.log(`   Provo proxy ${i + 1}/${maxAttempts}: ${proxy}`);
+            if (batch.length === 0) break;
             
-            const result = await testProxy(proxy);
+            console.log(`\n📦 Batch ${Math.floor(tested / batchSize) + 1}: test ${tested + 1}-${tested + batch.length}`);
             
-            if (result.working) {
-              console.log(`✅ Proxy funzionante trovato: ${proxy}`);
-              console.log(`   IP pubblico tramite proxy: ${result.ip}`);
-              return proxy;
-            } else {
-              console.log(`   ❌ Proxy fallito: ${result.error.substring(0, 50)}...`);
+            const workingProxies = await testProxiesBatch(batch);
+            
+            if (workingProxies.length > 0) {
+              const best = workingProxies[0];
+              console.log(`✅ Proxy funzionante trovato: ${best.proxy}`);
+              console.log(`   IP pubblico: ${best.ip}`);
+              console.log(`   Testati ${tested + batch.length} proxy in totale`);
+              return best.proxy;
             }
+            
+            console.log(`   ❌ Nessun proxy funzionante in questo batch`);
+            tested += batch.length;
           }
           
+          console.log(`\n⚠️ Testati ${tested} proxy senza successo`);
           return null;
         }
         
@@ -469,7 +502,7 @@ jobs:
     
     - name: Execute scraping with proxy rotation
       run: xvfb-run --auto-servernum node run-scraper.js
-      timeout-minutes: 25
+      timeout-minutes: 35
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
