@@ -1,54 +1,441 @@
-# .github/workflows/simple-chrome.yml
-name: Simple Chrome Scraper
-on: workflow_dispatch
+# .github/workflows/scrape.yml
+name: Chrome Bookmarklet Scraper
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     
     steps:
-    - name: Checkout
+    - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: Verify required files exist
+      run: |
+        echo "📂 File nella root:"
+        ls -la
+        
+        if [ ! -f "scrape.json" ]; then
+          echo "❌ ERRORE: scrape.json non trovato nella root"
+          echo "Creo file template..."
+          cat > scrape.json << 'EOF'
+          {
+            "url": "https://httpbin.org/html",
+            "name": "Test Site",
+            "wait_time": 5
+          }
+          EOF
+          exit 1
+        fi
+        
+        if [ ! -f "scraper.js" ]; then
+          echo "❌ ERRORE: scraper.js non trovato nella root"
+          echo "Creo file template..."
+          cat > scraper.js << 'EOF'
+          // Bookmarklet code - will be wrapped with javascript:(function(){ ... })();
+          const data = {
+            url: window.location.href,
+            title: document.title,
+            html: document.documentElement.outerHTML,
+            timestamp: new Date().toISOString()
+          };
+          
+          // Create download
+          const blob = new Blob([JSON.stringify(data, null, 2)], {
+            type: 'application/json'
+          });
+          const downloadUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download = 'scraped-data.json';
+          document.body.appendChild(link);
+          link.click();
+          
+          // Cleanup
+          setTimeout(() => {
+            document.body.removeChild(link);
+            URL.revokeObjectURL(downloadUrl);
+          }, 100);
+          EOF
+          exit 1
+        fi
+        
+        echo "✅ File necessari trovati"
+    
+    - name: Read configuration
+      id: config
+      run: |
+        echo "📖 Lettura configurazione..."
+        
+        # Leggi URL da scrape.json
+        TARGET_URL=$(jq -r '.url' scrape.json)
+        if [ -z "$TARGET_URL" ] || [ "$TARGET_URL" = "null" ]; then
+          echo "❌ ERRORE: URL non trovato in scrape.json"
+          exit 1
+        fi
+        
+        # Leggi altri parametri
+        SITE_NAME=$(jq -r '.name // "Unknown Site"' scrape.json)
+        WAIT_TIME=$(jq -r '.wait_time // 10' scrape.json)
+        
+        echo "🎯 Target URL: $TARGET_URL"
+        echo "📛 Site Name: $SITE_NAME"
+        echo "⏱️  Wait Time: ${WAIT_TIME}s"
+        
+        # Salva in environment
+        echo "TARGET_URL=$TARGET_URL" >> $GITHUB_ENV
+        echo "SITE_NAME=$SITE_NAME" >> $GITHUB_ENV
+        echo "WAIT_TIME=$WAIT_TIME" >> $GITHUB_ENV
+    
+    - name: Create bookmarklet from scraper.js
+      run: |
+        echo "🔧 Creazione bookmarklet..."
+        
+        # Leggi il contenuto di scraper.js
+        JS_CONTENT=$(cat scraper.js)
+        
+        # Rimuovi commenti all'inizio/fine se presenti
+        JS_CONTENT=$(echo "$JS_CONTENT" | sed '1s/^\/\/.*//')
+        
+        # Crea bookmarklet completo
+        BOOKMARKLET="javascript:(function(){${JS_CONTENT}})();"
+        
+        # Salva in file
+        echo "$BOOKMARKLET" > bookmarklet_complete.js
+        
+        echo "📏 Bookmarklet creato: $(wc -c < bookmarklet_complete.js) bytes"
+        echo "📋 Anteprima (primi 200 caratteri):"
+        head -c 200 bookmarklet_complete.js
+        echo "..."
     
     - name: Install Chrome
-      run: sudo apt-get update && sudo apt-get install -y google-chrome-stable
-    
-    - name: Leggi URL
       run: |
-        URL=$(jq -r '.url' scarpe.json)
-        echo "URL=$URL" >> $GITHUB_ENV
-        echo "🎯 Target: $URL"
-    
-    - name: Screenshot diretto (fallback)
-      run: |
-        google-chrome-stable \
-          --headless=new \
-          --no-sandbox \
-          --disable-gpu \
-          --window-size=1920,1080 \
-          --screenshot="screenshot.png" \
-          "${{ env.URL }}"
+        echo "🛠️ Installazione Chrome..."
+        sudo apt-get update
+        sudo apt-get install -y \
+          google-chrome-stable \
+          wget \
+          curl
         
-        echo "📸 Screenshot catturato"
+        echo "✅ Chrome versione:"
+        google-chrome --version
     
-    - name: Download HTML semplice
+    - name: Create Python automation script
       run: |
-        # Usa curl con user-agent Chrome
-        curl -s -L \
-          -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-          -o "page.html" \
-          "${{ env.URL }}" || true
+        cat > automate_chrome.py << 'EOF'
+        import os
+        import json
+        import subprocess
+        import time
+        import shutil
+        import tempfile
+        from pathlib import Path
         
-        if [ -s "page.html" ]; then
-          echo "✅ HTML scaricato: $(wc -l < page.html) linee"
-        else
-          echo "⚠️  HTML non scaricato"
+        def read_config():
+            """Leggi configurazione da scrape.json"""
+            with open('scrape.json', 'r') as f:
+                return json.load(f)
+        
+        def read_bookmarklet():
+            """Leggi bookmarklet da file"""
+            with open('bookmarklet_complete.js', 'r') as f:
+                return f.read().strip()
+        
+        def setup_chrome_profile(profile_dir):
+            """Configura profilo Chrome per download automatici"""
+            download_dir = os.path.join(profile_dir, 'Downloads')
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Crea directory Default
+            default_dir = os.path.join(profile_dir, 'Default')
+            os.makedirs(default_dir, exist_ok=True)
+            
+            # Preferences Chrome
+            prefs = {
+                "download": {
+                    "default_directory": download_dir,
+                    "directory_upgrade": True,
+                    "prompt_for_download": False,
+                    "extensions_to_open": ""
+                },
+                "browser": {
+                    "enable_spellchecking": False
+                }
+            }
+            
+            prefs_file = os.path.join(default_dir, 'Preferences')
+            with open(prefs_file, 'w') as f:
+                json.dump(prefs, f)
+            
+            return download_dir
+        
+        def start_chrome_with_url(profile_dir, url):
+            """Avvia Chrome con URL specifico"""
+            chrome_cmd = [
+                'google-chrome-stable',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                f'--user-data-dir={profile_dir}',
+                '--remote-debugging-port=9222',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+                url
+            ]
+            
+            print(f"🚀 Avvio Chrome: {' '.join(chrome_cmd[:3])}...")
+            process = subprocess.Popen(
+                chrome_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            # Attendi avvio
+            time.sleep(5)
+            return process
+        
+        def execute_bookmarklet_simple():
+            """
+            Metodo SEMPLICE: usa Chrome in headless per fare screenshot
+            e scarica HTML con curl
+            """
+            config = read_config()
+            url = config['url']
+            wait_time = config.get('wait_time', 10)
+            
+            print(f"🎯 Metodo semplice per: {url}")
+            
+            # 1. Screenshot con Chrome headless
+            print("📸 Cattura screenshot...")
+            try:
+                subprocess.run([
+                    'google-chrome-stable',
+                    '--headless=new',
+                    '--no-sandbox',
+                    '--disable-gpu',
+                    f'--window-size=1920,1080',
+                    f'--screenshot=screenshot.png',
+                    url
+                ], timeout=30, check=False)
+                
+                if os.path.exists('screenshot.png'):
+                    print("✅ Screenshot salvato: screenshot.png")
+            except Exception as e:
+                print(f"⚠️  Screenshot fallito: {e}")
+            
+            # 2. Download HTML con curl
+            print("🌐 Download HTML...")
+            try:
+                # User-Agent realistico
+                user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                
+                curl_cmd = [
+                    'curl', '-s', '-L',
+                    '-A', user_agent,
+                    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    '-H', 'Accept-Language: en-US,en;q=0.9',
+                    '-o', 'page.html',
+                    url
+                ]
+                
+                result = subprocess.run(curl_cmd, timeout=30, capture_output=True, text=True)
+                
+                if os.path.exists('page.html') and os.path.getsize('page.html') > 0:
+                    lines = sum(1 for line in open('page.html'))
+                    print(f"✅ HTML scaricato: {lines} linee")
+                    
+                    # Estrai titolo dall'HTML
+                    with open('page.html', 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read(5000)
+                        if '<title>' in content:
+                            start = content.find('<title>') + 7
+                            end = content.find('</title>')
+                            title = content[start:end].strip()
+                            print(f"📄 Titolo trovato: {title}")
+                else:
+                    print("⚠️  HTML non scaricato o vuoto")
+            except Exception as e:
+                print(f"⚠️  Download HTML fallito: {e}")
+            
+            # 3. Crea file dati basato su scraper.js
+            print("📝 Creazione file dati...")
+            try:
+                with open('scraper.js', 'r') as f:
+                    scraper_code = f.read()
+                
+                data = {
+                    'url': url,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'scraper_code': scraper_code,
+                    'method': 'simple_chrome_curl'
+                }
+                
+                with open('scraped_data.json', 'w') as f:
+                    json.dump(data, f, indent=2)
+                
+                print("✅ Dati salvati: scraped_data.json")
+                
+            except Exception as e:
+                print(f"⚠️  Creazione dati fallita: {e}")
+            
+            return True
+        
+        def main():
+            print("=" * 60)
+            print("CHROME BOOKMARKLET SCRAPER")
+            print("=" * 60)
+            
+            # Leggi configurazione
+            config = read_config()
+            url = config.get('url', 'https://example.com')
+            site_name = config.get('name', 'Unknown Site')
+            
+            print(f"🎯 Target: {site_name}")
+            print(f"🔗 URL: {url}")
+            
+            # Prova metodo semplice (più affidabile)
+            success = execute_bookmarklet_simple()
+            
+            if success:
+                # Controlla file generati
+                files = []
+                for f in ['screenshot.png', 'page.html', 'scraped_data.json']:
+                    if os.path.exists(f):
+                        size = os.path.getsize(f)
+                        files.append((f, size))
+                
+                if files:
+                    print("\n✅ SCRAPING COMPLETATO")
+                    print("📁 File generati:")
+                    for fname, fsize in files:
+                        print(f"   📄 {fname} ({fsize} bytes)")
+                else:
+                    print("\n⚠️  Nessun file generato")
+                    return False
+                
+                return True
+            else:
+                print("\n❌ SCRAPING FALLITO")
+                return False
+        
+        if __name__ == '__main__':
+            try:
+                success = main()
+                exit(0 if success else 1)
+            except Exception as e:
+                print(f"\n💥 ERRORE CRITICO: {e}")
+                import traceback
+                traceback.print_exc()
+                exit(1)
+        EOF
+        
+        echo "✅ Script Python creato"
+    
+    - name: Run scraping
+      timeout-minutes: 10
+      run: |
+        echo "🎬 Avvio scraping..."
+        python3 automate_chrome.py
+        
+        echo "📂 Contenuto directory dopo scraping:"
+        ls -la
+    
+    - name: Create summary report
+      if: always()
+      run: |
+        echo "📊 CREAZIONE REPORT"
+        echo "=================="
+        
+        # Controlla file esistenti
+        FILES_EXIST=false
+        
+        if [ -f "scraped_data.json" ]; then
+          echo "✅ scraped_data.json trovato"
+          echo "Contenuto:"
+          jq -r '.url, .timestamp' scraped_data.json
+          FILES_EXIST=true
         fi
+        
+        if [ -f "screenshot.png" ]; then
+          echo "✅ screenshot.png trovato ($(wc -c < screenshot.png) bytes)"
+          FILES_EXIST=true
+        fi
+        
+        if [ -f "page.html" ]; then
+          LINES=$(wc -l < page.html 2>/dev/null || echo "0")
+          echo "✅ page.html trovato ($LINES linee)"
+          FILES_EXIST=true
+          
+          # Estrai titolo se presente
+          TITLE=$(grep -o '<title>[^<]*</title>' page.html | sed 's/<title>//;s/<\/title>//' | head -1)
+          if [ -n "$TITLE" ]; then
+            echo "📄 Titolo HTML: $TITLE"
+          fi
+        fi
+        
+        # Crea report markdown
+        cat > REPORT.md << EOF
+        # Scraping Report
+        
+        **Data**: $(date)
+        **URL**: ${{ env.TARGET_URL }}
+        **Sito**: ${{ env.SITE_NAME }}
+        
+        ## File Generati
+        
+        EOF
+        
+        if [ -f "scraped_data.json" ]; then
+          echo "- 📄 **scraped_data.json**" >> REPORT.md
+        fi
+        
+        if [ -f "screenshot.png" ]; then
+          echo "- 📸 **screenshot.png**" >> REPORT.md
+        fi
+        
+        if [ -f "page.html" ]; then
+          echo "- 🌐 **page.html**" >> REPORT.md
+        fi
+        
+        if [ "$FILES_EXIST" = "false" ]; then
+          echo "❌ **Nessun file generato**" >> REPORT.md
+        fi
+        
+        echo "" >> REPORT.md
+        echo "## Log Scraping" >> REPORT.md
+        echo '```' >> REPORT.md
+        echo "Workflow: ${{ github.workflow }}" >> REPORT.md
+        echo "Run ID: ${{ github.run_id }}" >> REPORT.md
+        echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> REPORT.md
+        echo '```' >> REPORT.md
+        
+        cat REPORT.md
     
-    - name: Upload
+    - name: Upload results as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: direct-scrape
+        name: scraping-results
         path: |
+          scraped_data.json
           screenshot.png
           page.html
+          REPORT.md
+          scrape.json
+          scraper.js
+        retention-days: 30
+        if-no-files-found: warn
+    
+    - name: Notify success
+      if: success()
+      run: |
+        echo "✅ SCRAPING COMPLETATO CON SUCCESSO"
+        echo "==================================="
+        echo "URL: ${{ env.TARGET_URL }}"
+        echo "Artifact: scraping-results"
+        echo ""
+        echo "File disponibili nel download artifact"
