@@ -1,4 +1,4 @@
-name: Scraping Immobiliare.it (Stealth Mode)
+name: Scraping Immobiliare.it con Proxy Gratuiti
 
 on:
   workflow_dispatch:
@@ -22,24 +22,109 @@ jobs:
       with:
         node-version: '20'
     
-    - name: Install undetected-playwright (GRATUITO)
+    - name: Install dependencies
       run: |
         npm init -y
-        npm install playwright-extra puppeteer-extra-plugin-stealth
+        npm install playwright-extra puppeteer-extra-plugin-stealth axios
         npm install playwright
         npx playwright install chromium
         sudo npx playwright install-deps chromium
     
-    - name: Create stealth wrapper
+    - name: Download fresh proxy list
+      run: |
+        echo "📥 Download proxy list da TheSpeedX/PROXY-List..."
+        
+        # Download liste proxy HTTP/HTTPS
+        curl -s https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt > http_proxies.txt
+        curl -s https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/https.txt > https_proxies.txt
+        curl -s https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt > socks4_proxies.txt
+        curl -s https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt > socks5_proxies.txt
+        
+        # Conta proxy disponibili
+        HTTP_COUNT=$(wc -l < http_proxies.txt)
+        HTTPS_COUNT=$(wc -l < https_proxies.txt)
+        SOCKS4_COUNT=$(wc -l < socks4_proxies.txt)
+        SOCKS5_COUNT=$(wc -l < socks5_proxies.txt)
+        
+        echo "✅ Proxy HTTP: ${HTTP_COUNT}"
+        echo "✅ Proxy HTTPS: ${HTTPS_COUNT}"
+        echo "✅ Proxy SOCKS4: ${SOCKS4_COUNT}"
+        echo "✅ Proxy SOCKS5: ${SOCKS5_COUNT}"
+        
+        # Combina tutte le liste
+        cat http_proxies.txt https_proxies.txt > all_proxies.txt
+        
+        TOTAL=$(wc -l < all_proxies.txt)
+        echo "📊 Totale proxy disponibili: ${TOTAL}"
+    
+    - name: Create proxy-aware scraper
       run: |
         cat > run-scraper.js << 'EOF'
         const { chromium } = require('playwright-extra');
         const StealthPlugin = require('puppeteer-extra-plugin-stealth');
         const fs = require('fs');
         const path = require('path');
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execPromise = util.promisify(exec);
         
-        // Applica plugin stealth (GRATUITO - rimuove CDP leaks)
         chromium.use(StealthPlugin());
+        
+        // Funzione per testare un proxy
+        async function testProxy(proxy) {
+          try {
+            const testBrowser = await chromium.launch({
+              headless: true,
+              args: ['--no-sandbox', '--disable-setuid-sandbox'],
+              proxy: { server: `http://${proxy}` }
+            });
+            
+            const testContext = await testBrowser.newContext();
+            const testPage = await testContext.newPage();
+            
+            // Test veloce su un sito semplice
+            await testPage.goto('https://api.ipify.org?format=json', { 
+              timeout: 10000,
+              waitUntil: 'domcontentloaded'
+            });
+            
+            const content = await testPage.content();
+            await testBrowser.close();
+            
+            // Se arriviamo qui, il proxy funziona
+            const ipData = JSON.parse(content.match(/\{[^}]+\}/)[0]);
+            return { working: true, ip: ipData.ip };
+          } catch (e) {
+            return { working: false, error: e.message };
+          }
+        }
+        
+        // Funzione per trovare un proxy funzionante
+        async function findWorkingProxy(proxies, maxAttempts = 20) {
+          console.log(`🔍 Cerco un proxy funzionante (max ${maxAttempts} tentativi)...`);
+          
+          // Shuffle proxies per varietà
+          const shuffled = proxies.sort(() => Math.random() - 0.5);
+          
+          for (let i = 0; i < Math.min(maxAttempts, shuffled.length); i++) {
+            const proxy = shuffled[i].trim();
+            if (!proxy) continue;
+            
+            console.log(`   Provo proxy ${i + 1}/${maxAttempts}: ${proxy}`);
+            
+            const result = await testProxy(proxy);
+            
+            if (result.working) {
+              console.log(`✅ Proxy funzionante trovato: ${proxy}`);
+              console.log(`   IP pubblico tramite proxy: ${result.ip}`);
+              return proxy;
+            } else {
+              console.log(`   ❌ Proxy fallito: ${result.error.substring(0, 50)}...`);
+            }
+          }
+          
+          return null;
+        }
         
         (async () => {
           const configPath = path.join(__dirname, 'scrape.json');
@@ -68,205 +153,94 @@ jobs:
           
           const bookmarkletCode = fs.readFileSync(scraperPath, 'utf8');
           console.log(`📄 Bookmarklet caricato`);
-          console.log(`🥷 Modalità STEALTH attiva (anti-CDP)`);
           
-          // Lancia browser con massima stealth
-          const browser = await chromium.launch({
-            headless: true,  // headless=true con stealth è OK
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-blink-features=AutomationControlled',
-              '--disable-dev-shm-usage',
-              '--disable-web-security',
-              '--disable-features=IsolateOrigins,site-per-process',
-              '--disable-site-isolation-trials',
-              '--disable-features=BlockInsecurePrivateNetworkRequests',
-              // Argomenti extra per sembrare umano
-              '--window-size=1920,1080',
-              '--disable-infobars',
-              '--disable-breakpad',
-              '--disable-component-extensions-with-background-pages',
-              '--disable-extensions',
-              '--disable-features=TranslateUI',
-              '--disable-ipc-flooding-protection',
-              '--disable-renderer-backgrounding',
-              '--enable-features=NetworkService,NetworkServiceInProcess',
-              '--force-color-profile=srgb',
-              '--hide-scrollbars',
-              '--metrics-recording-only',
-              '--mute-audio',
-              '--no-first-run',
-              '--disable-background-timer-throttling',
-              '--disable-backgrounding-occluded-windows',
-              '--disable-hang-monitor',
-              '--disable-prompt-on-repost'
-            ]
-          });
+          // Carica lista proxy
+          const proxyListPath = path.join(__dirname, 'all_proxies.txt');
           
-          // Context con fingerprint realistico
-          const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0',  // USER AGENT SEMPLICE come richiesto
-            viewport: { width: 1920, height: 1080 },
-            screen: { width: 1920, height: 1080 },
-            deviceScaleFactor: 1,
-            isMobile: false,
-            hasTouch: false,
-            locale: 'it-IT',
-            timezoneId: 'Europe/Rome',
-            geolocation: { latitude: 41.9028, longitude: 12.4964 },
-            permissions: ['geolocation'],
-            colorScheme: 'light',
-            extraHTTPHeaders: {
-              'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-              'Accept-Encoding': 'gzip, deflate, br, zstd',
-              'Cache-Control': 'max-age=0',
-              'Sec-Ch-Ua': '"Not A(Brand";v="8", "Chromium";v="132"',
-              'Sec-Ch-Ua-Mobile': '?0',
-              'Sec-Ch-Ua-Platform': '"Linux"',
-              'Sec-Ch-Ua-Platform-Version': '"6.5.0"',
-              'Sec-Fetch-Dest': 'document',
-              'Sec-Fetch-Mode': 'navigate',
-              'Sec-Fetch-Site': 'none',
-              'Sec-Fetch-User': '?1',
-              'Upgrade-Insecure-Requests': '1',
-              'DNT': '1'
-            }
-          });
+          if (!fs.existsSync(proxyListPath)) {
+            console.error('❌ Lista proxy non trovata');
+            process.exit(1);
+          }
           
-          // Script anti-detection avanzato
-          await context.addInitScript(() => {
-            // Rimuovi completamente webdriver
-            Object.defineProperty(navigator, 'webdriver', {
-              get: () => undefined
-            });
-            
-            // Chrome runtime completo
-            window.chrome = {
-              app: {
-                isInstalled: false,
-                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
-              },
-              runtime: {
-                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
-              },
-              loadTimes: function() {},
-              csi: function() {}
-            };
-            
-            // Plugins realistici
-            Object.defineProperty(navigator, 'plugins', {
-              get: () => [
-                { 0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }, description: 'Portable Document Format', filename: 'internal-pdf-viewer', length: 1, name: 'Chrome PDF Plugin' },
-                { 0: { type: 'application/pdf', suffixes: 'pdf', description: '' }, description: 'Portable Document Format', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', length: 1, name: 'Chrome PDF Viewer' },
-                { 0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' }, 1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }, description: '', filename: 'internal-nacl-plugin', length: 2, name: 'Native Client' }
-              ]
-            });
-            
-            // Languages
-            Object.defineProperty(navigator, 'languages', {
-              get: () => ['it-IT', 'it', 'en-US', 'en']
-            });
-            
-            // Hardware concurrency
-            Object.defineProperty(navigator, 'hardwareConcurrency', {
-              get: () => 8
-            });
-            
-            // Device memory
-            Object.defineProperty(navigator, 'deviceMemory', {
-              get: () => 8
-            });
-            
-            // Platform
-            Object.defineProperty(navigator, 'platform', {
-              get: () => 'Linux x86_64'
-            });
-            
-            // MaxTouchPoints
-            Object.defineProperty(navigator, 'maxTouchPoints', {
-              get: () => 0
-            });
-            
-            // Vendor
-            Object.defineProperty(navigator, 'vendor', {
-              get: () => 'Google Inc.'
-            });
-            
-            // WebGL vendor/renderer
-            const getParameter = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(parameter) {
-              if (parameter === 37445) return 'Intel Inc.';
-              if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-              return getParameter.call(this, parameter);
-            };
-            
-            // Permissions API override
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-              parameters.name === 'notifications' 
-                ? Promise.resolve({ state: Notification.permission, onchange: null })
-                : originalQuery(parameters)
-            );
-            
-            // Battery API (non presente in headless normalmente)
-            Object.defineProperty(navigator, 'getBattery', {
-              value: () => Promise.resolve({
-                charging: true,
-                chargingTime: 0,
-                dischargingTime: Infinity,
-                level: 1,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                dispatchEvent: () => true
-              })
-            });
-            
-            // Connection API
-            Object.defineProperty(navigator, 'connection', {
-              get: () => ({
-                effectiveType: '4g',
-                rtt: 50,
-                downlink: 10,
-                saveData: false,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                dispatchEvent: () => true
-              })
-            });
-          });
+          const proxies = fs.readFileSync(proxyListPath, 'utf8')
+            .split('\n')
+            .filter(p => p.trim());
           
-          const page = await context.newPage();
+          console.log(`📋 Caricati ${proxies.length} proxy dalla lista`);
           
-          let downloadedData = null;
+          // Trova un proxy funzionante
+          const workingProxy = await findWorkingProxy(proxies);
           
-          page.on('download', async (download) => {
-            console.log('📥 Download intercettato');
-            const downloadPath = await download.path();
-            if (downloadPath && fs.existsSync(downloadPath)) {
-              downloadedData = fs.readFileSync(downloadPath, 'utf8');
-              console.log('✅ Dati catturati');
-            }
-          });
+          if (!workingProxy) {
+            console.error('❌ Nessun proxy funzionante trovato!');
+            console.error('   Prova a eseguire di nuovo - le liste gratuite cambiano spesso');
+            process.exit(1);
+          }
+          
+          console.log(`🚀 Avvio scraping tramite proxy: ${workingProxy}`);
+          
+          let browser;
           
           try {
-            console.log('🌐 Navigazione in corso...');
+            browser = await chromium.launch({
+              headless: true,
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--window-size=1920,1080'
+              ],
+              proxy: {
+                server: `http://${workingProxy}`
+              }
+            });
             
-            // Prima navigazione con delay lungo
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0',
+              viewport: { width: 1920, height: 1080 },
+              locale: 'it-IT',
+              timezoneId: 'Europe/Rome',
+              extraHTTPHeaders: {
+                'Accept-Language': 'it-IT,it;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+              }
+            });
+            
+            await context.addInitScript(() => {
+              Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+              });
+              
+              window.chrome = { runtime: {} };
+              
+              Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+              });
+            });
+            
+            const page = await context.newPage();
+            
+            let downloadedData = null;
+            
+            page.on('download', async (download) => {
+              console.log('📥 Download intercettato');
+              const downloadPath = await download.path();
+              if (downloadPath && fs.existsSync(downloadPath)) {
+                downloadedData = fs.readFileSync(downloadPath, 'utf8');
+                console.log('✅ Dati catturati');
+              }
+            });
+            
+            console.log('🌐 Navigazione tramite proxy...');
+            
             await page.goto(targetUrl, { 
-              waitUntil: 'domcontentloaded',
+              waitUntil: 'networkidle',
               timeout: 90000 
             });
             
-            console.log('⏳ Attesa iniziale (15 secondi)...');
-            await page.waitForTimeout(15000);
+            console.log('⏳ Attesa iniziale...');
+            await page.waitForTimeout(8000);
             
             // Verifica blocco
             const pageContent = await page.content();
@@ -274,79 +248,51 @@ jobs:
             
             if (pageContent.includes('captcha') || 
                 pageContent.includes('Access Denied') ||
-                pageContent.includes('cf-challenge') ||
-                pageContent.includes('checking your browser') ||
-                pageTitle.includes('Just a moment') ||
+                pageContent.includes('blocked') ||
                 pageTitle.includes('403')) {
-              console.error('⚠️  Possibile blocco rilevato');
+              console.warn('⚠️  Possibile blocco rilevato, ma continuo...');
               await page.screenshot({ 
                 path: './blocked_screenshot.png',
                 fullPage: true 
               });
-              console.log('📸 Screenshot salvato per analisi');
             } else {
               console.log(`✅ Pagina caricata: ${pageTitle}`);
             }
             
-            // Comportamento umano intensivo
-            console.log('🖱️  Simulazione comportamento umano esteso...');
+            // Comportamento umano
+            console.log('🖱️  Simulazione comportamento...');
             
-            // Movimenti mouse molto graduali
-            for (let i = 0; i < 15; i++) {
-              const x = 100 + Math.floor(Math.random() * 1700);
-              const y = 100 + Math.floor(Math.random() * 900);
-              await page.mouse.move(x, y, { steps: 20 });
-              await page.waitForTimeout(400 + Math.random() * 800);
+            for (let i = 0; i < 8; i++) {
+              const x = 200 + Math.floor(Math.random() * 1500);
+              const y = 200 + Math.floor(Math.random() * 800);
+              await page.mouse.move(x, y, { steps: 15 });
+              await page.waitForTimeout(300 + Math.random() * 700);
             }
             
-            // Scroll naturale multi-step
-            const scrollPositions = [0, 200, 500, 800, 1200, 1600, 1200, 800, 400, 0];
+            const scrollPositions = [300, 600, 900, 600, 300, 0];
             for (const pos of scrollPositions) {
               await page.evaluate((y) => {
                 window.scrollTo({ top: y, behavior: 'smooth' });
               }, pos);
-              await page.waitForTimeout(1500 + Math.random() * 2000);
+              await page.waitForTimeout(1200 + Math.random() * 1500);
             }
             
-            // Click casuali su elementi non interattivi
-            try {
-              const safeElements = await page.$$('div, span, p');
-              if (safeElements.length > 0) {
-                const randomEl = safeElements[Math.floor(Math.random() * Math.min(5, safeElements.length))];
-                await randomEl.click({ force: true }).catch(() => {});
-                await page.waitForTimeout(1000);
-              }
-            } catch (e) {}
+            await page.waitForTimeout(2000);
             
-            // Cookie banner - prova multipli selettori
+            // Cookie banner
             console.log('🍪 Gestione cookie...');
-            const cookieSelectors = [
-              'button:has-text("Accetta")',
-              'button:has-text("Acconsento")',
-              'button:has-text("Accetta tutti")',
-              'button:has-text("Accetta cookie")',
-              '[data-testid="cookie-accept"]',
-              '[id*="accept"]',
-              '[id*="consent"]',
-              '.cookie-accept',
-              '#didomi-notice-agree-button'
-            ];
-            
-            for (const selector of cookieSelectors) {
-              try {
-                const btn = page.locator(selector).first();
-                if (await btn.isVisible({ timeout: 1000 })) {
-                  await btn.click();
-                  console.log(`✅ Cookie accettati (${selector})`);
-                  await page.waitForTimeout(3000);
-                  break;
-                }
-              } catch (e) {}
+            try {
+              const cookieBtn = await page.locator('button:has-text("Accetta"), button:has-text("Acconsento")').first();
+              if (await cookieBtn.isVisible({ timeout: 3000 })) {
+                await cookieBtn.click();
+                console.log('✅ Cookie accettati');
+                await page.waitForTimeout(2000);
+              }
+            } catch (e) {
+              console.log('ℹ️  Nessun cookie banner');
             }
             
             console.log('⚙️  Esecuzione bookmarklet...');
-            console.log('📊 Tempo stimato: 5-15 minuti (200 pagine)');
-            
             await page.evaluate(bookmarkletCode);
             
             console.log('⏰ Attendo completamento (max 20 minuti)...');
@@ -360,7 +306,7 @@ jobs:
               }, { timeout: 1200000 }); // 20 minuti
               
               completed = true;
-              console.log('✅ Scraping completato!');
+              console.log('✅ Completato!');
             } catch (e) {
               console.log('⚠️  Timeout, recupero dati parziali...');
             }
@@ -430,8 +376,8 @@ jobs:
               timestamp: new Date().toISOString(),
               totalItems: scrapedData.length,
               stats: { withPrice, withSurface, withPhoto },
-              method: 'playwright-extra-stealth',
-              userAgent: 'Mozilla/5.0',
+              proxy: workingProxy,
+              method: 'free-proxy-rotation',
               completed: completed,
               success: true
             };
@@ -456,6 +402,7 @@ jobs:
             console.log(`   Con prezzo: ${withPrice}`);
             console.log(`   Con superficie: ${withSurface}`);
             console.log(`   Con foto: ${withPhoto}`);
+            console.log(`   Proxy usato: ${workingProxy}`);
             console.log('\n✅ Successo!');
             
           } catch (error) {
@@ -466,9 +413,6 @@ jobs:
                 path: './error_screenshot.png',
                 fullPage: true 
               });
-              const html = await page.content();
-              fs.writeFileSync('./error_page.html', html);
-              console.log('📸 Debug salvato');
             } catch (e) {}
             
             const outputDir = './scraped_data';
@@ -481,6 +425,7 @@ jobs:
               url: targetUrl,
               timestamp: new Date().toISOString(),
               error: error.message,
+              proxy: workingProxy,
               stack: error.stack
             };
             
@@ -496,7 +441,7 @@ jobs:
             
             process.exit(1);
           } finally {
-            await browser.close();
+            if (browser) await browser.close();
           }
         })();
         EOF
@@ -521,10 +466,9 @@ jobs:
         sudo apt-get install -y xvfb
         Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
         sleep 3
-        echo "✅ Display virtuale"
     
-    - name: Execute scraping
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" node run-scraper.js
+    - name: Execute scraping with proxy rotation
+      run: xvfb-run --auto-servernum node run-scraper.js
       timeout-minutes: 25
     
     - name: Upload artifacts
@@ -537,7 +481,6 @@ jobs:
           error_screenshot.png
           debug_screenshot.png
           blocked_screenshot.png
-          error_page.html
         retention-days: 90
     
     - name: Show summary
