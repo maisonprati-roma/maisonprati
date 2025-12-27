@@ -1,17 +1,324 @@
-name: Apri Browser
-on: 
+name: Scraping Immobiliare.it
+
+on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'scrape.json'
+      - 'scraper.js'
+  schedule:
+    - cron: '0 */12 * * *'  # Ogni 12 ore
 
 jobs:
-  test-browser:
+  scrape:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - name: Installa Puppeteer
-        run: npm install puppeteer
-      - name: Esegui script browser
-        run: node script.js
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install Playwright
+      run: |
+        npm install -D @playwright/test
+        npx playwright install chromium
+        npx playwright install-deps chromium
+    
+    - name: Setup Xvfb (display virtuale)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+    
+    - name: Create wrapper script
+      run: |
+        cat > run-scraper.js << 'EOF'
+        const { chromium } = require('playwright');
+        const fs = require('fs');
+        const path = require('path');
+        
+        (async () => {
+          // Leggi configurazione
+          const configPath = path.join(__dirname, 'scrape.json');
+          
+          if (!fs.existsSync(configPath)) {
+            console.error('❌ Errore: scrape.json non trovato!');
+            process.exit(1);
+          }
+          
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          const targetUrl = config.url;
+          
+          if (!targetUrl) {
+            console.error('❌ Errore: URL non trovato in scrape.json!');
+            process.exit(1);
+          }
+          
+          console.log(`📍 URL: ${targetUrl}`);
+          
+          // Leggi bookmarklet
+          const scraperPath = path.join(__dirname, 'scraper.js');
+          
+          if (!fs.existsSync(scraperPath)) {
+            console.error('❌ Errore: scraper.js non trovato!');
+            process.exit(1);
+          }
+          
+          const bookmarkletCode = fs.readFileSync(scraperPath, 'utf8');
+          console.log(`📄 Bookmarklet: ${bookmarkletCode.length} caratteri`);
+          console.log(`🚀 Avvio Chrome headed con Xvfb`);
+          
+          // CHROME NORMALE (headed) - funziona grazie a Xvfb
+          const browser = await chromium.launch({
+            headless: false,  // ← CHROME VISIBILE
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-blink-features=AutomationControlled',
+              '--window-size=1920,1080',
+              '--start-maximized'
+            ]
+          });
+          
+          const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1920, height: 1080 },
+            locale: 'it-IT',
+            timezoneId: 'Europe/Rome',
+            extraHTTPHeaders: {
+              'Accept-Language': 'it-IT,it;q=0.9',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+            }
+          });
+          
+          // Rimuovi webdriver flag
+          await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => false
+            });
+            
+            window.chrome = { runtime: {} };
+            
+            Object.defineProperty(navigator, 'plugins', {
+              get: () => [1, 2, 3, 4, 5]
+            });
+          });
+          
+          const page = await context.newPage();
+          
+          let downloadedData = null;
+          
+          // Intercetta download
+          page.on('download', async (download) => {
+            console.log('📥 Download:', await download.suggestedFilename());
+            const downloadPath = await download.path();
+            if (downloadPath && fs.existsSync(downloadPath)) {
+              downloadedData = fs.readFileSync(downloadPath, 'utf8');
+              console.log('✅ Dati catturati');
+            }
+          });
+          
+          try {
+            console.log('🌐 Caricamento pagina...');
+            await page.goto(targetUrl, { 
+              waitUntil: 'networkidle',
+              timeout: 90000 
+            });
+            
+            console.log('⏳ Simulo comportamento umano...');
+            
+            // Movimento mouse casuale
+            for (let i = 0; i < 5; i++) {
+              const x = Math.floor(Math.random() * 1920);
+              const y = Math.floor(Math.random() * 1080);
+              await page.mouse.move(x, y);
+              await page.waitForTimeout(300 + Math.random() * 500);
+            }
+            
+            // Scroll umano
+            const scrollSteps = [200, 400, 600, 800, 400, 200, 0];
+            for (const scrollY of scrollSteps) {
+              await page.evaluate((y) => {
+                window.scrollTo({ top: y, behavior: 'smooth' });
+              }, scrollY);
+              await page.waitForTimeout(800 + Math.random() * 1200);
+            }
+            
+            await page.waitForTimeout(3000);
+            
+            // Cookie banner
+            try {
+              const cookieBtn = await page.locator('button:has-text("Accetta"), button:has-text("Acconsento")').first();
+              if (await cookieBtn.isVisible({ timeout: 2000 })) {
+                await cookieBtn.click();
+                console.log('🍪 Cookie accettati');
+                await page.waitForTimeout(1000);
+              }
+            } catch (e) {
+              console.log('ℹ️  Nessun cookie banner');
+            }
+            
+            // ESEGUI IL TUO BOOKMARKLET
+            console.log('⚙️  Esecuzione bookmarklet...');
+            await page.evaluate(bookmarkletCode);
+            
+            // Attendi completamento
+            console.log('⏰ Attendo completamento (max 10 min)...');
+            
+            try {
+              await page.waitForFunction(() => {
+                const overlay = document.getElementById('imm-scr-status');
+                return overlay && overlay.textContent.includes('finito');
+              }, { timeout: 600000 });
+              
+              console.log('✅ Scraping completato!');
+            } catch (e) {
+              console.log('⚠️  Timeout o completamento non rilevato');
+            }
+            
+            await page.waitForTimeout(5000);
+            
+            // Recupera dati da localStorage
+            let scrapedData = null;
+            
+            try {
+              const storageData = await page.evaluate(() => {
+                const key = 'immobiliare_scrape_data_v3';
+                const data = localStorage.getItem(key);
+                return data ? JSON.parse(data) : null;
+              });
+              
+              if (storageData) {
+                scrapedData = storageData;
+                console.log(`✅ localStorage: ${scrapedData.length} immobili`);
+              }
+            } catch (e) {
+              console.log('⚠️  Errore localStorage:', e.message);
+            }
+            
+            // Usa dati download se disponibili
+            if (downloadedData) {
+              try {
+                scrapedData = JSON.parse(downloadedData);
+                console.log(`✅ Download: ${scrapedData.length} immobili`);
+              } catch (e) {
+                console.log('⚠️  Errore parsing download');
+              }
+            }
+            
+            if (!scrapedData || scrapedData.length === 0) {
+              await page.screenshot({ 
+                path: './debug_screenshot.png',
+                fullPage: true 
+              });
+              throw new Error('Nessun dato estratto');
+            }
+            
+            // Salva dati
+            const outputDir = './scraped_data';
+            
+            if (!fs.existsSync(outputDir)) {
+              fs.mkdirSync(outputDir, { recursive: true });
+            }
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const outputFile = `${outputDir}/immobiliare_${timestamp}.json`;
+            
+            fs.writeFileSync(outputFile, JSON.stringify(scrapedData, null, 2));
+            console.log(`💾 Salvato: ${outputFile}`);
+            
+            // Screenshot
+            const screenshotFile = `${outputDir}/screenshot_${timestamp}.png`;
+            await page.screenshot({ 
+              path: screenshotFile,
+              fullPage: false
+            });
+            
+            // Summary
+            const summary = {
+              url: targetUrl,
+              timestamp: new Date().toISOString(),
+              totalItems: scrapedData.length,
+              stats: {
+                withPrice: scrapedData.filter(i => i.price).length,
+                withSurface: scrapedData.filter(i => i.surface).length,
+                withPhoto: scrapedData.filter(i => i.photo).length
+              },
+              success: true
+            };
+            
+            fs.writeFileSync(
+              `${outputDir}/summary_${timestamp}.json`, 
+              JSON.stringify(summary, null, 2)
+            );
+            
+            fs.writeFileSync(
+              `${outputDir}/immobiliare_latest.json`,
+              JSON.stringify(scrapedData, null, 2)
+            );
+            
+            fs.writeFileSync(
+              `${outputDir}/summary_latest.json`,
+              JSON.stringify(summary, null, 2)
+            );
+            
+            console.log(`\n📊 Totale: ${scrapedData.length} immobili`);
+            console.log('✅ Completato!');
+            
+          } catch (error) {
+            console.error('❌ Errore:', error);
+            
+            try {
+              await page.screenshot({ 
+                path: './error_screenshot.png',
+                fullPage: true 
+              });
+            } catch (e) {}
+            
+            process.exit(1);
+          } finally {
+            await browser.close();
+          }
+        })();
+        EOF
+    
+    - name: Verify files
+      run: |
+        echo "🔍 File necessari:"
+        ls -lh scrape.json scraper.js
+    
+    - name: Execute scraping with Xvfb
+      run: xvfb-run -a --server-args="-screen 0 1920x1080x24" node run-scraper.js
+      timeout-minutes: 15
+      env:
+        DISPLAY: ':99'
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: immobiliare-data-${{ github.run_number }}
+        path: |
+          scraped_data/
+          error_screenshot.png
+          debug_screenshot.png
+        retention-days: 90
+    
+    - name: Show summary
+      if: success()
+      run: |
+        echo "📊 RIEPILOGO:"
+        cat scraped_data/summary_latest.json 2>/dev/null || echo "Nessun summary"
+    
+    - name: Commit results
+      if: success()
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add scraped_data/*.json 2>/dev/null || true
+        git commit -m "🏠 Update $(date +'%Y-%m-%d %H:%M')" || true
+        git push || true
