@@ -1,3 +1,9 @@
 {
-"url":"https://www.immobiliare.it/agenzie-immobiliari/438027/maison-prati-srl/"
+"url":"https://www.immobiliare.it/agenzie-immobiliari/438027/maison-prati-srl/",
+  "name": "Esempio Sito scrape",
+  "config": {
+    "wait_time": 10,
+    "download_format": "json",
+    "max_retries": 3
+  }
 }

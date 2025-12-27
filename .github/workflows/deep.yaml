@@ -1,0 +1,538 @@
+# .github/workflows/bookmarklet-scraper.yml
+name: Bookmarklet Scraper from Files
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Install Chrome e dipendenze
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          google-chrome-stable \
+          wget \
+          curl \
+          jq \
+          python3 \
+          python3-pip
+        
+        # Installa dipendenze Python
+        pip3 install websocket-client
+        
+        echo "✅ Chrome installato:"
+        google-chrome --version
+    
+    - name: Leggi configurazione
+      id: config
+      run: |
+        echo "📂 Lettura file configurazione..."
+        
+        # Verifica file scarpe.json
+        if [ ! -f "scarpe.json" ]; then
+          echo "❌ ERRORE: File scarpe.json non trovato"
+          echo "Creo template..."
+          cat > scarpe.json << 'EOF'
+          {
+            "url": "https://example.com",
+            "name": "Sito di esempio",
+            "config": {
+              "wait_time": 5,
+              "download_format": "json"
+            }
+          }
+          EOF
+        fi
+        
+        # Leggi URL
+        TARGET_URL=$(jq -r '.url // empty' scarpe.json)
+        if [ -z "$TARGET_URL" ] || [ "$TARGET_URL" = "null" ]; then
+          echo "❌ ERRORE: URL non trovato in scarpe.json"
+          exit 1
+        fi
+        
+        echo "🎯 Target URL: $TARGET_URL"
+        echo "TARGET_URL=$TARGET_URL" >> $GITHUB_ENV
+        
+        # Verifica scraper.js
+        if [ ! -f "scraper.js" ]; then
+          echo "❌ ERRORE: File scraper.js non trovato"
+          echo "Creo template..."
+          cat > scraper.js << 'EOF'
+          // Il tuo codice bookmarklet qui
+          // Questo verrà trasformato in: javascript:(function(){ ... })();
+          
+          // Esempio di scraper base
+          const data = {
+            url: window.location.href,
+            title: document.title,
+            html: document.documentElement.outerHTML,
+            timestamp: new Date().toISOString(),
+            links: Array.from(document.querySelectorAll('a')).map(a => ({
+              href: a.href,
+              text: a.textContent.trim().substring(0, 100)
+            }))
+          };
+          
+          // Crea download
+          const blob = new Blob([JSON.stringify(data, null, 2)], {
+            type: 'application/json'
+          });
+          const downloadUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = 'scraped-data-' + Date.now() + '.json';
+          document.body.appendChild(a);
+          a.click();
+          
+          // Cleanup
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl);
+          }, 100);
+          EOF
+        fi
+        
+        echo "✅ File di configurazione letti"
+    
+    - name: Prepara bookmarklet
+      id: prepare
+      run: |
+        echo "🔧 Preparazione bookmarklet..."
+        
+        # Leggi scraper.js e aggiungi javascript: wrapper
+        BOOKMARKLET_CODE=$(cat scraper.js)
+        
+        # Crea bookmarklet completo
+        cat > bookmarklet.js << 'EOF'
+        // Bookmarklet completo pronto per Chrome
+        javascript:(function(){
+          try {
+            // Aggiungi timeout per sicurezza
+            setTimeout(() => {
+              ${BOOKMARKLET_CODE}
+            }, 100);
+          } catch(error) {
+            console.error('Bookmarklet error:', error);
+            alert('Scraping error: ' + error.message);
+          }
+        })();
+        EOF
+        
+        # Crea anche versione minificata
+        cat > bookmarklet.min.js << 'EOF'
+        javascript:(function(){try{setTimeout(()=>{${BOOKMARKLET_CODE}},100)}catch(e){console.error(e)}})();
+        EOF
+        
+        echo "📏 Lunghezza bookmarklet: $(wc -c < bookmarklet.js) bytes"
+        echo "BOOKMARKLET_FILE=bookmarklet.js" >> $GITHUB_ENV
+    
+    - name: Crea script Python per Chrome automation
+      run: |
+        cat > run_scraper.py << 'EOF'
+        import json
+        import subprocess
+        import time
+        import os
+        import urllib.request
+        import urllib.error
+        import shutil
+        import tempfile
+        from pathlib import Path
+        
+        class ChromeBookmarkletExecutor:
+            def __init__(self):
+                self.chrome_process = None
+                self.profile_dir = tempfile.mkdtemp(prefix="chrome_profile_")
+                self.download_dir = os.path.join(self.profile_dir, "Downloads")
+                os.makedirs(self.download_dir, exist_ok=True)
+                print(f"📁 Profile dir: {self.profile_dir}")
+                print(f"📁 Download dir: {self.download_dir}")
+            
+            def load_config(self):
+                """Carica configurazione da file"""
+                with open('scarpe.json', 'r') as f:
+                    config = json.load(f)
+                
+                with open('bookmarklet.js', 'r') as f:
+                    bookmarklet = f.read().strip()
+                
+                return {
+                    'url': config.get('url'),
+                    'name': config.get('name', 'Unknown'),
+                    'bookmarklet': bookmarklet,
+                    'wait_time': config.get('config', {}).get('wait_time', 10)
+                }
+            
+            def setup_chrome_profile(self):
+                """Configura profilo Chrome con preferences"""
+                default_dir = os.path.join(self.profile_dir, "Default")
+                os.makedirs(default_dir, exist_ok=True)
+                
+                # Chrome preferences
+                prefs = {
+                    "download": {
+                        "default_directory": self.download_dir,
+                        "directory_upgrade": True,
+                        "prompt_for_download": False,
+                        "extensions_to_open": ""
+                    },
+                    "browser": {
+                        "enable_spellchecking": False
+                    },
+                    "profile": {
+                        "content_settings": {
+                            "exceptions": {
+                                "automatic_downloads": {
+                                    "*": {"setting": 1}
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                prefs_file = os.path.join(default_dir, "Preferences")
+                with open(prefs_file, 'w') as f:
+                    json.dump(prefs, f, indent=2)
+                
+                print("✅ Chrome profile configurato")
+            
+            def start_chrome(self, url):
+                """Avvia Chrome con remote debugging"""
+                chrome_cmd = [
+                    "google-chrome-stable",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    f"--user-data-dir={self.profile_dir}",
+                    "--remote-debugging-port=9222",
+                    "--remote-debugging-address=0.0.0.0",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--window-size=1920,1080",
+                    "--disable-blink-features=AutomationControlled",
+                    url
+                ]
+                
+                print(f"🚀 Avvio Chrome: {' '.join(chrome_cmd[:5])}...")
+                self.chrome_process = subprocess.Popen(
+                    chrome_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                
+                # Attendi avvio Chrome
+                for i in range(30):  # 30 tentativi
+                    try:
+                        with urllib.request.urlopen("http://localhost:9222/json", timeout=2) as response:
+                            tabs = json.loads(response.read())
+                            if tabs:
+                                print("✅ Chrome avviato con successo")
+                                return tabs[0]['webSocketDebuggerUrl']
+                    except (urllib.error.URLError, ConnectionRefusedError):
+                        if i % 5 == 0:
+                            print(f"⏳ Attesa Chrome... ({i+1}/30)")
+                        time.sleep(1)
+                
+                raise Exception("Chrome non risponde dopo 30 secondi")
+            
+            def execute_bookmarklet(self, websocket_url, bookmarklet_code):
+                """Esegue bookmarklet via Chrome DevTools Protocol"""
+                import websocket
+                import threading
+                
+                print("🔗 Connessione a Chrome DevTools...")
+                
+                # Estrai solo il codice JS (rimuovi "javascript:" se presente)
+                if bookmarklet_code.startswith('javascript:'):
+                    js_code = bookmarklet_code[11:]  # Rimuovi "javascript:"
+                else:
+                    js_code = bookmarklet_code
+                
+                # Pulisci codice
+                js_code = js_code.strip()
+                if js_code.startswith('(function(){'):
+                    js_code = js_code[12:-2]  # Rimuovi wrapper
+                
+                # Crea comando CDP
+                message = {
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": js_code,
+                        "userGesture": True,
+                        "awaitPromise": True,
+                        "returnByValue": True
+                    }
+                }
+                
+                response_received = threading.Event()
+                result = {"response": None}
+                
+                def on_message(ws, message):
+                    data = json.loads(message)
+                    if data.get("id") == 1:
+                        result["response"] = data
+                        response_received.set()
+                
+                def on_error(ws, error):
+                    print(f"❌ WebSocket error: {error}")
+                
+                def on_close(ws, *args):
+                    print("🔌 WebSocket chiuso")
+                
+                def on_open(ws):
+                    print("✅ WebSocket connesso, invio bookmarklet...")
+                    ws.send(json.dumps(message))
+                
+                # Connetti WebSocket
+                ws_url = websocket_url.replace("http://", "ws://")
+                ws = websocket.WebSocketApp(
+                    ws_url,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                
+                # Esegui in thread
+                wst = threading.Thread(target=ws.run_forever)
+                wst.daemon = True
+                wst.start()
+                
+                # Attendi risposta
+                if response_received.wait(timeout=15):
+                    print("✅ Bookmarklet eseguito")
+                    
+                    if result["response"].get("result"):
+                        res = result["response"]["result"]
+                        if res.get("value"):
+                            print(f"📊 Risultato: {json.dumps(res['value'], indent=2)}")
+                    
+                    return True
+                else:
+                    print("❌ Timeout esecuzione bookmarklet")
+                    return False
+            
+            def wait_for_downloads(self, timeout=30):
+                """Attendi completamento download"""
+                print(f"⏳ Attesa download (max {timeout}s)...")
+                
+                start_time = time.time()
+                last_count = -1
+                
+                while time.time() - start_time < timeout:
+                    # Conta file .crdownload (download in corso)
+                    crdownload_files = list(Path(self.download_dir).glob("*.crdownload"))
+                    
+                    # Conta file completati
+                    completed_files = []
+                    for ext in ['.json', '.zip', '.csv', '.html', '.txt']:
+                        completed_files.extend(list(Path(self.download_dir).glob(f"*{ext}")))
+                    
+                    current_count = len(completed_files)
+                    
+                    if crdownload_files:
+                        print(f"📥 Download in corso: {len(crdownload_files)} file")
+                        time.sleep(1)
+                        continue
+                    
+                    if current_count > 0 and current_count != last_count:
+                        print(f"✅ Download completati: {current_count} file")
+                        last_count = current_count
+                    
+                    if current_count > 0 and not crdownload_files:
+                        # Aspetta un po' per sicurezza
+                        time.sleep(2)
+                        break
+                    
+                    time.sleep(1)
+                
+                # Lista file scaricati
+                downloaded = []
+                for ext in ['.json', '.zip', '.csv', '.html', '.txt']:
+                    for file in Path(self.download_dir).glob(f"*{ext}"):
+                        downloaded.append(str(file))
+                
+                return downloaded
+            
+            def copy_downloads_to_workspace(self, files):
+                """Copia file scaricati nella workspace"""
+                workspace_files = []
+                for src_file in files:
+                    filename = os.path.basename(src_file)
+                    dest_file = os.path.join(os.getcwd(), filename)
+                    
+                    # Evita sovrascritture
+                    counter = 1
+                    while os.path.exists(dest_file):
+                        name, ext = os.path.splitext(filename)
+                        dest_file = os.path.join(os.getcwd(), f"{name}_{counter}{ext}")
+                        counter += 1
+                    
+                    shutil.copy2(src_file, dest_file)
+                    workspace_files.append(dest_file)
+                    print(f"📄 Copiato: {filename}")
+                
+                return workspace_files
+            
+            def cleanup(self):
+                """Pulizia risorse"""
+                if self.chrome_process:
+                    self.chrome_process.terminate()
+                    try:
+                        self.chrome_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.chrome_process.kill()
+                
+                # Rimuovi profile directory
+                if os.path.exists(self.profile_dir):
+                    shutil.rmtree(self.profile_dir, ignore_errors=True)
+                    print("🧹 Profile directory rimossa")
+            
+            def run(self):
+                """Esegui il processo completo"""
+                try:
+                    # 1. Carica configurazione
+                    print("=" * 60)
+                    print("CHROME BOOKMARKLET SCRAPER")
+                    print("=" * 60)
+                    
+                    config = self.load_config()
+                    print(f"🎯 Target: {config['url']}")
+                    print(f"📛 Nome: {config['name']}")
+                    print(f"⏱️  Wait time: {config['wait_time']}s")
+                    
+                    # 2. Setup Chrome
+                    self.setup_chrome_profile()
+                    
+                    # 3. Avvia Chrome
+                    websocket_url = self.start_chrome(config['url'])
+                    
+                    # 4. Attendi caricamento pagina
+                    print(f"⏳ Attesa caricamento pagina ({config['wait_time']}s)...")
+                    time.sleep(config['wait_time'])
+                    
+                    # 5. Esegui bookmarklet
+                    success = self.execute_bookmarklet(websocket_url, config['bookmarklet'])
+                    
+                    if not success:
+                        print("⚠️  Tentativo fallback...")
+                        # Fallback: prova ad eseguire direttamente JS
+                        time.sleep(3)
+                    
+                    # 6. Attendi download
+                    downloaded_files = self.wait_for_downloads(timeout=30)
+                    
+                    if downloaded_files:
+                        # 7. Copia file
+                        workspace_files = self.copy_downloads_to_workspace(downloaded_files)
+                        
+                        # 8. Crea report
+                        self.create_report(config, workspace_files)
+                        
+                        print(f"\n✅ SUCCESSO! Scaricati {len(workspace_files)} file")
+                        return workspace_files
+                    else:
+                        print("\n❌ Nessun file scaricato")
+                        return []
+                        
+                except Exception as e:
+                    print(f"\n❌ ERRORE CRITICO: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    return []
+            
+            def create_report(self, config, files):
+                """Crea file report"""
+                report = {
+                    "scraping_session": {
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "target_url": config['url'],
+                        "target_name": config['name'],
+                        "files_downloaded": [
+                            {
+                                "filename": os.path.basename(f),
+                                "size": os.path.getsize(f),
+                                "path": f
+                            } for f in files
+                        ],
+                        "github_context": {
+                            "workflow": os.environ.get('GITHUB_WORKFLOW', ''),
+                            "run_id": os.environ.get('GITHUB_RUN_ID', '')
+                        }
+                    }
+                }
+                
+                report_file = "scraping_report.json"
+                with open(report_file, 'w') as f:
+                    json.dump(report, f, indent=2)
+                
+                print(f"📊 Report creato: {report_file}")
+        
+        # Main execution
+        if __name__ == "__main__":
+            scraper = ChromeBookmarkletExecutor()
+            files = scraper.run()
+            
+            if files:
+                print("\n" + "=" * 60)
+                print("RIEPILOGO FILE SCARICATI:")
+                print("=" * 60)
+                for f in files:
+                    size_kb = os.path.getsize(f) / 1024
+                    print(f"📄 {os.path.basename(f)} ({size_kb:.1f} KB)")
+                
+                # Exit success
+                exit(0)
+            else:
+                exit(1)
+                
+            scraper.cleanup()
+        EOF
+        
+        echo "✅ Script Python creato"
+    
+    - name: Esegui scraper
+      run: |
+        echo "🎬 Avvio processo di scraping..."
+        python3 run_scraper.py 2>&1
+        
+        # Verifica file scaricati
+        echo "📂 Contenuto directory:"
+        ls -la *.json *.zip *.html *.csv 2>/dev/null || echo "Nessun file scaricato"
+    
+    - name: Upload risultati
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraped-data
+        path: |
+          *.json
+          *.zip
+          *.html
+          *.csv
+          scraping_report.json
+        retention-days: 30
+        if-no-files-found: warn
+    
+    - name: Notifica completamento
+      if: always()
+      run: |
+        if [ -f "scraping_report.json" ]; then
+          echo "✅ SCRAPING COMPLETATO CON SUCCESSO"
+          echo "File scaricati:"
+          jq -r '.scraping_session.files_downloaded[].filename' scraping_report.json
+        else
+          echo "⚠️  SCRAPING PARZIALMENTE RIUSCITO O FALLITO"
+          exit 1
+        fi
