@@ -6,8 +6,8 @@ on:
     paths:
       - 'scrape.json'
       - 'scraper.js'
-  schedule:
-    - cron: '0 2 * * *'
+  #schedule:
+  #  - cron: '0 2 * * *'
 
 jobs:
   scrape:
