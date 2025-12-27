@@ -1,4 +1,4 @@
-name: Scraping Immobiliare.it
+name: Scraping Immobiliare.it (Stealth Mode)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - 'scrape.json'
       - 'scraper.js'
   schedule:
-    - cron: '0 2 * * *'  # Esegui ogni giorno alle 2:00 AM
+    - cron: '0 2 * * *'
 
 jobs:
   scrape:
@@ -22,25 +22,30 @@ jobs:
       with:
         node-version: '20'
     
-    - name: Install Playwright
+    - name: Install undetected-playwright (GRATUITO)
       run: |
-        npm install -D @playwright/test
+        npm init -y
+        npm install playwright-extra puppeteer-extra-plugin-stealth
+        npm install playwright
         npx playwright install chromium
-        npx playwright install-deps chromium
+        sudo npx playwright install-deps chromium
     
-    - name: Create wrapper script
+    - name: Create stealth wrapper
       run: |
         cat > run-scraper.js << 'EOF'
-        const { chromium } = require('playwright');
+        const { chromium } = require('playwright-extra');
+        const StealthPlugin = require('puppeteer-extra-plugin-stealth');
         const fs = require('fs');
         const path = require('path');
         
+        // Applica plugin stealth (GRATUITO - rimuove CDP leaks)
+        chromium.use(StealthPlugin());
+        
         (async () => {
-          // Leggi l'URL dal file scrape.json
           const configPath = path.join(__dirname, 'scrape.json');
           
           if (!fs.existsSync(configPath)) {
-            console.error('❌ Errore: scrape.json non trovato!');
+            console.error('❌ scrape.json non trovato');
             process.exit(1);
           }
           
@@ -48,26 +53,26 @@ jobs:
           const targetUrl = config.url;
           
           if (!targetUrl) {
-            console.error('❌ Errore: URL non trovato in scrape.json!');
+            console.error('❌ URL non trovato');
             process.exit(1);
           }
           
-          console.log(`📍 URL caricato da scrape.json: ${targetUrl}`);
+          console.log(`📍 URL: ${targetUrl}`);
           
-          // Leggi il file scraper.js
           const scraperPath = path.join(__dirname, 'scraper.js');
           
           if (!fs.existsSync(scraperPath)) {
-            console.error('❌ Errore: scraper.js non trovato!');
+            console.error('❌ scraper.js non trovato');
             process.exit(1);
           }
           
           const bookmarkletCode = fs.readFileSync(scraperPath, 'utf8');
-          console.log(`📄 Bookmarklet caricato (${bookmarkletCode.length} caratteri)`);
-          console.log(`🚀 Avvio scraping immobiliare.it`);
+          console.log(`📄 Bookmarklet caricato`);
+          console.log(`🥷 Modalità STEALTH attiva (anti-CDP)`);
           
+          // Lancia browser con massima stealth
           const browser = await chromium.launch({
-            headless: false,
+            headless: true,  // headless=true con stealth è OK
             args: [
               '--no-sandbox',
               '--disable-setuid-sandbox',
@@ -75,133 +80,294 @@ jobs:
               '--disable-dev-shm-usage',
               '--disable-web-security',
               '--disable-features=IsolateOrigins,site-per-process',
+              '--disable-site-isolation-trials',
+              '--disable-features=BlockInsecurePrivateNetworkRequests',
+              // Argomenti extra per sembrare umano
               '--window-size=1920,1080',
-              '--start-maximized'
+              '--disable-infobars',
+              '--disable-breakpad',
+              '--disable-component-extensions-with-background-pages',
+              '--disable-extensions',
+              '--disable-features=TranslateUI',
+              '--disable-ipc-flooding-protection',
+              '--disable-renderer-backgrounding',
+              '--enable-features=NetworkService,NetworkServiceInProcess',
+              '--force-color-profile=srgb',
+              '--hide-scrollbars',
+              '--metrics-recording-only',
+              '--mute-audio',
+              '--no-first-run',
+              '--disable-background-timer-throttling',
+              '--disable-backgrounding-occluded-windows',
+              '--disable-hang-monitor',
+              '--disable-prompt-on-repost'
             ]
           });
           
+          // Context con fingerprint realistico
           const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0',
+            userAgent: 'Mozilla/5.0',  // USER AGENT SEMPLICE come richiesto
             viewport: { width: 1920, height: 1080 },
+            screen: { width: 1920, height: 1080 },
+            deviceScaleFactor: 1,
+            isMobile: false,
+            hasTouch: false,
             locale: 'it-IT',
             timezoneId: 'Europe/Rome',
+            geolocation: { latitude: 41.9028, longitude: 12.4964 },
+            permissions: ['geolocation'],
+            colorScheme: 'light',
             extraHTTPHeaders: {
               'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-              'Accept-Encoding': 'gzip, deflate, br',
-              'DNT': '1',
-              'Connection': 'keep-alive',
-              'Upgrade-Insecure-Requests': '1',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+              'Accept-Encoding': 'gzip, deflate, br, zstd',
+              'Cache-Control': 'max-age=0',
+              'Sec-Ch-Ua': '"Not A(Brand";v="8", "Chromium";v="132"',
+              'Sec-Ch-Ua-Mobile': '?0',
+              'Sec-Ch-Ua-Platform': '"Linux"',
+              'Sec-Ch-Ua-Platform-Version': '"6.5.0"',
               'Sec-Fetch-Dest': 'document',
               'Sec-Fetch-Mode': 'navigate',
               'Sec-Fetch-Site': 'none',
-              'Sec-Fetch-User': '?1'
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
+              'DNT': '1'
             }
           });
           
-          // Rimuovi indicatori di automazione
+          // Script anti-detection avanzato
           await context.addInitScript(() => {
+            // Rimuovi completamente webdriver
             Object.defineProperty(navigator, 'webdriver', {
-              get: () => false
+              get: () => undefined
             });
             
+            // Chrome runtime completo
             window.chrome = {
-              runtime: {}
+              app: {
+                isInstalled: false,
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+              },
+              runtime: {
+                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+                PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+                RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
+              },
+              loadTimes: function() {},
+              csi: function() {}
             };
             
+            // Plugins realistici
             Object.defineProperty(navigator, 'plugins', {
-              get: () => [1, 2, 3, 4, 5]
+              get: () => [
+                { 0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }, description: 'Portable Document Format', filename: 'internal-pdf-viewer', length: 1, name: 'Chrome PDF Plugin' },
+                { 0: { type: 'application/pdf', suffixes: 'pdf', description: '' }, description: 'Portable Document Format', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', length: 1, name: 'Chrome PDF Viewer' },
+                { 0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' }, 1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }, description: '', filename: 'internal-nacl-plugin', length: 2, name: 'Native Client' }
+              ]
             });
             
+            // Languages
             Object.defineProperty(navigator, 'languages', {
               get: () => ['it-IT', 'it', 'en-US', 'en']
+            });
+            
+            // Hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+              get: () => 8
+            });
+            
+            // Device memory
+            Object.defineProperty(navigator, 'deviceMemory', {
+              get: () => 8
+            });
+            
+            // Platform
+            Object.defineProperty(navigator, 'platform', {
+              get: () => 'Linux x86_64'
+            });
+            
+            // MaxTouchPoints
+            Object.defineProperty(navigator, 'maxTouchPoints', {
+              get: () => 0
+            });
+            
+            // Vendor
+            Object.defineProperty(navigator, 'vendor', {
+              get: () => 'Google Inc.'
+            });
+            
+            // WebGL vendor/renderer
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+              if (parameter === 37445) return 'Intel Inc.';
+              if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+              return getParameter.call(this, parameter);
+            };
+            
+            // Permissions API override
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+              parameters.name === 'notifications' 
+                ? Promise.resolve({ state: Notification.permission, onchange: null })
+                : originalQuery(parameters)
+            );
+            
+            // Battery API (non presente in headless normalmente)
+            Object.defineProperty(navigator, 'getBattery', {
+              value: () => Promise.resolve({
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1,
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => true
+              })
+            });
+            
+            // Connection API
+            Object.defineProperty(navigator, 'connection', {
+              get: () => ({
+                effectiveType: '4g',
+                rtt: 50,
+                downlink: 10,
+                saveData: false,
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => true
+              })
             });
           });
           
           const page = await context.newPage();
           
-          // Intercetta il download del file JSON
           let downloadedData = null;
           
           page.on('download', async (download) => {
-            console.log('📥 Download intercettato:', await download.suggestedFilename());
+            console.log('📥 Download intercettato');
             const downloadPath = await download.path();
             if (downloadPath && fs.existsSync(downloadPath)) {
               downloadedData = fs.readFileSync(downloadPath, 'utf8');
-              console.log('✅ Dati dal download catturati');
+              console.log('✅ Dati catturati');
             }
           });
           
           try {
-            // Naviga alla pagina target
-            console.log('🌐 Caricamento pagina immobiliare.it...');
+            console.log('🌐 Navigazione in corso...');
             
-            // Primo caricamento con delay naturale
+            // Prima navigazione con delay lungo
             await page.goto(targetUrl, { 
-              waitUntil: 'networkidle',
+              waitUntil: 'domcontentloaded',
               timeout: 90000 
             });
             
-            console.log('⏳ Simulo comportamento umano...');
+            console.log('⏳ Attesa iniziale (15 secondi)...');
+            await page.waitForTimeout(15000);
             
-            // Simula movimenti del mouse casuali
-            for (let i = 0; i < 5; i++) {
-              const x = Math.floor(Math.random() * 1920);
-              const y = Math.floor(Math.random() * 1080);
-              await page.mouse.move(x, y);
-              await page.waitForTimeout(300 + Math.random() * 500);
+            // Verifica blocco
+            const pageContent = await page.content();
+            const pageTitle = await page.title();
+            
+            if (pageContent.includes('captcha') || 
+                pageContent.includes('Access Denied') ||
+                pageContent.includes('cf-challenge') ||
+                pageContent.includes('checking your browser') ||
+                pageTitle.includes('Just a moment') ||
+                pageTitle.includes('403')) {
+              console.error('⚠️  Possibile blocco rilevato');
+              await page.screenshot({ 
+                path: './blocked_screenshot.png',
+                fullPage: true 
+              });
+              console.log('📸 Screenshot salvato per analisi');
+            } else {
+              console.log(`✅ Pagina caricata: ${pageTitle}`);
             }
             
-            // Scroll casuale per simulare lettura umana
-            const scrollSteps = [200, 400, 600, 800, 400, 200, 0];
-            for (const scrollY of scrollSteps) {
+            // Comportamento umano intensivo
+            console.log('🖱️  Simulazione comportamento umano esteso...');
+            
+            // Movimenti mouse molto graduali
+            for (let i = 0; i < 15; i++) {
+              const x = 100 + Math.floor(Math.random() * 1700);
+              const y = 100 + Math.floor(Math.random() * 900);
+              await page.mouse.move(x, y, { steps: 20 });
+              await page.waitForTimeout(400 + Math.random() * 800);
+            }
+            
+            // Scroll naturale multi-step
+            const scrollPositions = [0, 200, 500, 800, 1200, 1600, 1200, 800, 400, 0];
+            for (const pos of scrollPositions) {
               await page.evaluate((y) => {
                 window.scrollTo({ top: y, behavior: 'smooth' });
-              }, scrollY);
-              await page.waitForTimeout(800 + Math.random() * 1200);
+              }, pos);
+              await page.waitForTimeout(1500 + Math.random() * 2000);
             }
             
-            // Attesa finale prima di iniziare lo scraping
-            await page.waitForTimeout(3000);
-            
-            // Gestione cookie banner se presente
+            // Click casuali su elementi non interattivi
             try {
-              const cookieBtn = await page.locator('button:has-text("Accetta"), button:has-text("Acconsento")').first();
-              if (await cookieBtn.isVisible({ timeout: 2000 })) {
-                await cookieBtn.click();
-                console.log('🍪 Cookie banner gestito');
+              const safeElements = await page.$$('div, span, p');
+              if (safeElements.length > 0) {
+                const randomEl = safeElements[Math.floor(Math.random() * Math.min(5, safeElements.length))];
+                await randomEl.click({ force: true }).catch(() => {});
                 await page.waitForTimeout(1000);
               }
-            } catch (e) {
-              console.log('ℹ️  Nessun cookie banner o già accettato');
+            } catch (e) {}
+            
+            // Cookie banner - prova multipli selettori
+            console.log('🍪 Gestione cookie...');
+            const cookieSelectors = [
+              'button:has-text("Accetta")',
+              'button:has-text("Acconsento")',
+              'button:has-text("Accetta tutti")',
+              'button:has-text("Accetta cookie")',
+              '[data-testid="cookie-accept"]',
+              '[id*="accept"]',
+              '[id*="consent"]',
+              '.cookie-accept',
+              '#didomi-notice-agree-button'
+            ];
+            
+            for (const selector of cookieSelectors) {
+              try {
+                const btn = page.locator(selector).first();
+                if (await btn.isVisible({ timeout: 1000 })) {
+                  await btn.click();
+                  console.log(`✅ Cookie accettati (${selector})`);
+                  await page.waitForTimeout(3000);
+                  break;
+                }
+              } catch (e) {}
             }
             
-            // Esegui il bookmarklet
             console.log('⚙️  Esecuzione bookmarklet...');
-            console.log('📊 Lo scraping multi-pagina può richiedere diversi minuti...');
+            console.log('📊 Tempo stimato: 5-15 minuti (200 pagine)');
             
-            // Esegui lo script e attendi che completi
             await page.evaluate(bookmarkletCode);
             
-            // Attendi che appaia l'overlay di completamento o timeout dopo 10 minuti
-            console.log('⏰ Attendo completamento scraping (max 10 minuti)...');
+            console.log('⏰ Attendo completamento (max 20 minuti)...');
+            
+            let completed = false;
             
             try {
-              // Attendi che l'overlay mostri "finito"
               await page.waitForFunction(() => {
                 const overlay = document.getElementById('imm-scr-status');
                 return overlay && overlay.textContent.includes('finito');
-              }, { timeout: 600000 }); // 10 minuti
+              }, { timeout: 1200000 }); // 20 minuti
               
+              completed = true;
               console.log('✅ Scraping completato!');
             } catch (e) {
-              console.log('⚠️  Timeout scraping o completamento non rilevato');
+              console.log('⚠️  Timeout, recupero dati parziali...');
             }
             
-            // Attendi eventuali download
             await page.waitForTimeout(5000);
             
-            // Prova a recuperare i dati dal localStorage
+            // Recupera dati
             let scrapedData = null;
             
             try {
@@ -211,34 +377,33 @@ jobs:
                 return data ? JSON.parse(data) : null;
               });
               
-              if (storageData) {
+              if (storageData && storageData.length > 0) {
                 scrapedData = storageData;
-                console.log(`✅ Dati recuperati da localStorage: ${scrapedData.length} immobili`);
+                console.log(`✅ localStorage: ${scrapedData.length} immobili`);
               }
             } catch (e) {
-              console.log('⚠️  Impossibile recuperare dati da localStorage:', e.message);
+              console.log('⚠️  Errore localStorage:', e.message);
             }
             
-            // Se abbiamo intercettato un download, usa quei dati
             if (downloadedData) {
               try {
-                scrapedData = JSON.parse(downloadedData);
-                console.log(`✅ Dati dal download: ${scrapedData.length} immobili`);
-              } catch (e) {
-                console.log('⚠️  Errore parsing download:', e.message);
-              }
+                const parsed = JSON.parse(downloadedData);
+                if (!scrapedData || parsed.length > scrapedData.length) {
+                  scrapedData = parsed;
+                  console.log(`✅ Download: ${scrapedData.length} immobili`);
+                }
+              } catch (e) {}
             }
             
             if (!scrapedData || scrapedData.length === 0) {
-              console.log('⚠️  Nessun dato estratto, salvo screenshot per debug');
               await page.screenshot({ 
                 path: './debug_screenshot.png',
                 fullPage: true 
               });
-              throw new Error('Nessun dato estratto dallo scraping');
+              throw new Error('Nessun dato estratto');
             }
             
-            // Salva i dati
+            // Salva
             const outputDir = './scraped_data';
             
             if (!fs.existsSync(outputDir)) {
@@ -249,35 +414,25 @@ jobs:
             const outputFile = `${outputDir}/immobiliare_${timestamp}.json`;
             
             fs.writeFileSync(outputFile, JSON.stringify(scrapedData, null, 2));
-            console.log(`💾 Dati salvati in: ${outputFile}`);
+            console.log(`💾 Salvato: ${outputFile}`);
             
-            // Salva screenshot finale
-            const screenshotFile = `${outputDir}/screenshot_${timestamp}.png`;
             await page.screenshot({ 
-              path: screenshotFile,
+              path: `${outputDir}/screenshot_${timestamp}.png`,
               fullPage: false
             });
-            console.log(`📸 Screenshot salvato in: ${screenshotFile}`);
             
-            // Analisi dati
             const withPrice = scrapedData.filter(i => i.price).length;
             const withSurface = scrapedData.filter(i => i.surface).length;
             const withPhoto = scrapedData.filter(i => i.photo).length;
             
-            // Crea un file di riepilogo
             const summary = {
               url: targetUrl,
               timestamp: new Date().toISOString(),
               totalItems: scrapedData.length,
-              stats: {
-                withPrice,
-                withSurface,
-                withPhoto,
-                withMeta: scrapedData.filter(i => i.meta && i.meta.length).length,
-                withTags: scrapedData.filter(i => i.tag && i.tag.length).length
-              },
-              scraperFile: 'scraper.js',
-              configFile: 'scrape.json',
+              stats: { withPrice, withSurface, withPhoto },
+              method: 'playwright-extra-stealth',
+              userAgent: 'Mozilla/5.0',
+              completed: completed,
               success: true
             };
             
@@ -286,7 +441,6 @@ jobs:
               JSON.stringify(summary, null, 2)
             );
             
-            // Crea file "latest" per accesso rapido
             fs.writeFileSync(
               `${outputDir}/immobiliare_latest.json`,
               JSON.stringify(scrapedData, null, 2)
@@ -298,25 +452,25 @@ jobs:
             );
             
             console.log('\n📊 Riepilogo:');
-            console.log(`   Totale immobili: ${scrapedData.length}`);
+            console.log(`   Totale: ${scrapedData.length}`);
             console.log(`   Con prezzo: ${withPrice}`);
             console.log(`   Con superficie: ${withSurface}`);
             console.log(`   Con foto: ${withPhoto}`);
-            console.log('\n✅ Scraping completato con successo!');
+            console.log('\n✅ Successo!');
             
           } catch (error) {
-            console.error('❌ Errore durante lo scraping:', error);
+            console.error('❌ Errore:', error.message);
             
-            // Salva screenshot di errore
             try {
               await page.screenshot({ 
                 path: './error_screenshot.png',
                 fullPage: true 
               });
-              console.log('📸 Screenshot di errore salvato');
+              const html = await page.content();
+              fs.writeFileSync('./error_page.html', html);
+              console.log('📸 Debug salvato');
             } catch (e) {}
             
-            // Salva l'errore
             const outputDir = './scraped_data';
             if (!fs.existsSync(outputDir)) {
               fs.mkdirSync(outputDir, { recursive: true });
@@ -347,44 +501,33 @@ jobs:
         })();
         EOF
     
-    - name: Verify required files
+    - name: Verify files
       run: |
-        echo "🔍 Verifica file necessari..."
-        
         if [ ! -f "scrape.json" ]; then
           echo "❌ scrape.json non trovato"
           exit 1
         fi
-        echo "✅ scrape.json trovato"
         
         if [ ! -f "scraper.js" ]; then
           echo "❌ scraper.js non trovato"
           exit 1
         fi
-        echo "✅ scraper.js trovato"
         
-        echo ""
-        echo "📄 Configurazione (scrape.json):"
-        cat scrape.json | head -n 10
+        echo "✅ File verificati"
     
     - name: Setup Xvfb
       run: |
-        sudo apt-get update
+        sudo apt-get update -qq
         sudo apt-get install -y xvfb
-        export DISPLAY=:99
-        Xvfb :99 -screen 0 1920x1080x24 &
+        Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
         sleep 3
-
-    - name: Execute scraping with Xvfb
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" node run-scraper.js
-      timeout-minutes: 15
-
-
-   # - name: Execute scraping
-   #   run: node run-scraper.js
-   #   timeout-minutes: 15
+        echo "✅ Display virtuale"
     
-    - name: Upload scraped data
+    - name: Execute scraping
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" node run-scraper.js
+      timeout-minutes: 25
+    
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
@@ -393,25 +536,24 @@ jobs:
           scraped_data/
           error_screenshot.png
           debug_screenshot.png
+          blocked_screenshot.png
+          error_page.html
         retention-days: 90
     
-    - name: Show results summary
+    - name: Show summary
       if: success()
       run: |
         echo ""
-        echo "📊 ===== RIEPILOGO SCRAPING ====="
+        echo "📊 ===== RIEPILOGO ====="
         if [ -f "scraped_data/summary_latest.json" ]; then
           cat scraped_data/summary_latest.json
         fi
-        echo ""
-        echo "📁 File generati:"
-        ls -lh scraped_data/ 2>/dev/null || echo "Nessun file"
     
-    - name: Commit and push results
+    - name: Commit results
       if: success()
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add scraped_data/*.json 2>/dev/null || true
-        git commit -m "🏠 Aggiornamento dati immobiliare.it - $(date +'%Y-%m-%d %H:%M:%S')" || true
+        git commit -m "🏠 Update $(date +'%Y-%m-%d %H:%M')" || true
         git push || true
