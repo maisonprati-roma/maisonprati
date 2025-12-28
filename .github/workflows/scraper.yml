@@ -7,11 +7,11 @@ on:
       - 'scrape.json'
       - 'scraper.js'
   schedule:
-    - cron: '0 24 * * *'
+    - cron: '0 22 * * *'
 
-  permissions:
-        contents: write  # Permette push al repository
-        actions: read    # Permette lettura actions
+permissions:
+    contents: write  # Permette push al repository
+    actions: read    # Permette lettura actions
 
 jobs:
   deep_exec:
