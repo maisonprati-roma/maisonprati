@@ -1,14 +1,18 @@
-# .github/workflows/scrape.yml
-name: Chrome Bookmarklet Scraper
+name: Scraping Immobiliare.it con Chrome Reale
+
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'scrape.json'
+      - 'scraper.js'
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 2 * * *'
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
@@ -16,312 +20,384 @@ jobs:
       with:
         fetch-depth: 1
     
-    - name: Verify required files exist
+    - name: Verify required files
       run: |
-        echo "📂 File nella root:"
-        ls -la
+        echo "📂 Verifica file necessari..."
         
         if [ ! -f "scrape.json" ]; then
-          echo "❌ ERRORE: scrape.json non trovato nella root"
-          echo "Creo file template..."
-          cat > scrape.json << 'EOF'
-          {
-            "url": "https://httpbin.org/html",
-            "name": "Test Site",
-            "wait_time": 5
-          }
-          EOF
+          echo "❌ ERRORE: scrape.json non trovato"
           exit 1
         fi
         
         if [ ! -f "scraper.js" ]; then
-          echo "❌ ERRORE: scraper.js non trovato nella root"
-          echo "Creo file template..."
-          cat > scraper.js << 'EOF'
-          // Bookmarklet code - will be wrapped with javascript:(function(){ ... })();
-          const data = {
-            url: window.location.href,
-            title: document.title,
-            html: document.documentElement.outerHTML,
-            timestamp: new Date().toISOString()
-          };
-          
-          // Create download
-          const blob = new Blob([JSON.stringify(data, null, 2)], {
-            type: 'application/json'
-          });
-          const downloadUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.download = 'scraped-data.json';
-          document.body.appendChild(link);
-          link.click();
-          
-          // Cleanup
-          setTimeout(() => {
-            document.body.removeChild(link);
-            URL.revokeObjectURL(downloadUrl);
-          }, 100);
-          EOF
+          echo "❌ ERRORE: scraper.js non trovato"
           exit 1
         fi
         
-        echo "✅ File necessari trovati"
+        echo "✅ File trovati"
+        echo ""
+        echo "📄 scrape.json:"
+        cat scrape.json
     
     - name: Read configuration
       id: config
       run: |
-        echo "📖 Lettura configurazione..."
+        echo "📖 Lettura configurazione da scrape.json..."
         
-        # Leggi URL da scrape.json
         TARGET_URL=$(jq -r '.url' scrape.json)
         if [ -z "$TARGET_URL" ] || [ "$TARGET_URL" = "null" ]; then
           echo "❌ ERRORE: URL non trovato in scrape.json"
           exit 1
         fi
         
-        # Leggi altri parametri
-        SITE_NAME=$(jq -r '.name // "Unknown Site"' scrape.json)
-        WAIT_TIME=$(jq -r '.wait_time // 10' scrape.json)
-        
         echo "🎯 Target URL: $TARGET_URL"
-        echo "📛 Site Name: $SITE_NAME"
-        echo "⏱️  Wait Time: ${WAIT_TIME}s"
-        
-        # Salva in environment
         echo "TARGET_URL=$TARGET_URL" >> $GITHUB_ENV
-        echo "SITE_NAME=$SITE_NAME" >> $GITHUB_ENV
-        echo "WAIT_TIME=$WAIT_TIME" >> $GITHUB_ENV
     
-    - name: Create bookmarklet from scraper.js
+    - name: Install Chrome and dependencies
       run: |
-        echo "🔧 Creazione bookmarklet..."
-        
-        # Leggi il contenuto di scraper.js
-        JS_CONTENT=$(cat scraper.js)
-        
-        # Rimuovi commenti all'inizio/fine se presenti
-        JS_CONTENT=$(echo "$JS_CONTENT" | sed '1s/^\/\/.*//')
-        
-        # Crea bookmarklet completo
-        BOOKMARKLET="javascript:(function(){${JS_CONTENT}})();"
-        
-        # Salva in file
-        echo "$BOOKMARKLET" > bookmarklet_complete.js
-        
-        echo "📏 Bookmarklet creato: $(wc -c < bookmarklet_complete.js) bytes"
-        echo "📋 Anteprima (primi 200 caratteri):"
-        head -c 200 bookmarklet_complete.js
-        echo "..."
-    
-    - name: Install Chrome
-      run: |
-        echo "🛠️ Installazione Chrome..."
-        sudo apt-get update
+        echo "🛠️ Installazione Chrome e dipendenze..."
+        sudo apt-get update -qq
         sudo apt-get install -y \
           google-chrome-stable \
           wget \
-          curl
+          curl \
+          xvfb \
+          jq \
+          python3-pip
+        
+        pip3 install selenium webdriver-manager
         
         echo "✅ Chrome versione:"
         google-chrome --version
     
-    - name: Create Python automation script
+    - name: Create Python scraper with Chrome
       run: |
-        cat > automate_chrome.py << 'EOF'
+        cat > chrome_scraper.py << 'PYSCRIPT'
         import os
         import json
-        import subprocess
         import time
-        import shutil
-        import tempfile
+        import base64
         from pathlib import Path
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from webdriver_manager.chrome import ChromeDriverManager
         
         def read_config():
-            """Leggi configurazione da scrape.json"""
+            """Leggi URL da scrape.json"""
             with open('scrape.json', 'r') as f:
-                return json.load(f)
+                config = json.load(f)
+            return config.get('url')
         
         def read_bookmarklet():
-            """Leggi bookmarklet da file"""
-            with open('bookmarklet_complete.js', 'r') as f:
-                return f.read().strip()
+            """Leggi bookmarklet da scraper.js"""
+            with open('scraper.js', 'r', encoding='utf-8') as f:
+                return f.read()
         
-        def setup_chrome_profile(profile_dir):
-            """Configura profilo Chrome per download automatici"""
-            download_dir = os.path.join(profile_dir, 'Downloads')
-            os.makedirs(download_dir, exist_ok=True)
+        def setup_chrome_driver():
+            """Configura Chrome con opzioni stealth"""
+            chrome_options = Options()
             
-            # Crea directory Default
-            default_dir = os.path.join(profile_dir, 'Default')
-            os.makedirs(default_dir, exist_ok=True)
+            # Argomenti Chrome
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_argument('--disable-infobars')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--start-maximized')
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-gpu')
             
-            # Preferences Chrome
+            # User agent
+            chrome_options.add_argument('--user-agent=Mozilla/5.0')
+            
+            # Preferenze
             prefs = {
-                "download": {
-                    "default_directory": download_dir,
-                    "directory_upgrade": True,
-                    "prompt_for_download": False,
-                    "extensions_to_open": ""
-                },
-                "browser": {
-                    "enable_spellchecking": False
-                }
+                'download.default_directory': os.getcwd(),
+                'download.prompt_for_download': False,
+                'download.directory_upgrade': True,
+                'safebrowsing.enabled': False
             }
+            chrome_options.add_experimental_option('prefs', prefs)
+            chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
             
-            prefs_file = os.path.join(default_dir, 'Preferences')
-            with open(prefs_file, 'w') as f:
-                json.dump(prefs, f)
+            # Installa ChromeDriver
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            return download_dir
+            # Rimuovi webdriver flag
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    window.chrome = { runtime: {} };
+                '''
+            })
+            
+            return driver
         
-        def start_chrome_with_url(profile_dir, url):
-            """Avvia Chrome con URL specifico"""
-            chrome_cmd = [
-                'google-chrome-stable',
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                f'--user-data-dir={profile_dir}',
-                '--remote-debugging-port=9222',
-                '--disable-gpu',
-                '--window-size=1920,1080',
-                url
+        def wait_for_page_load(driver, timeout=30):
+            """Attendi caricamento completo pagina"""
+            try:
+                WebDriverWait(driver, timeout).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                )
+                return True
+            except:
+                return False
+        
+        def simulate_human_behavior(driver):
+            """Simula comportamento umano"""
+            print("🖱️  Simulazione comportamento umano...")
+            
+            time.sleep(3)
+            
+            # Scroll naturale
+            for i in range(3):
+                scroll_y = 300 * (i + 1)
+                driver.execute_script(f'window.scrollTo({{top: {scroll_y}, behavior: "smooth"}});')
+                time.sleep(1.5)
+            
+            driver.execute_script('window.scrollTo({top: 0, behavior: "smooth"});')
+            time.sleep(2)
+        
+        def handle_cookie_banner(driver):
+            """Gestisci cookie banner se presente"""
+            print("🍪 Gestione cookie banner...")
+            
+            selectors = [
+                'button:has-text("Accetta")',
+                'button:has-text("Acconsento")',
+                'button[id*="accept"]',
+                'button[class*="cookie"]',
+                '#didomi-notice-agree-button'
             ]
             
-            print(f"🚀 Avvio Chrome: {' '.join(chrome_cmd[:3])}...")
-            process = subprocess.Popen(
-                chrome_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            for selector in selectors:
+                try:
+                    # Prova con JavaScript
+                    script = f"""
+                        const buttons = document.querySelectorAll('button');
+                        for (let btn of buttons) {{
+                            if (btn.textContent.includes('Accetta') || 
+                                btn.textContent.includes('Acconsento')) {{
+                                btn.click();
+                                return true;
+                            }}
+                        }}
+                        return false;
+                    """
+                    if driver.execute_script(script):
+                        print("✅ Cookie banner gestito")
+                        time.sleep(2)
+                        return
+                except:
+                    continue
             
-            # Attendi avvio
-            time.sleep(5)
-            return process
+            print("ℹ️  Nessun cookie banner rilevato")
         
-        def execute_bookmarklet_simple():
-            """
-            Metodo SEMPLICE: usa Chrome in headless per fare screenshot
-            e scarica HTML con curl
-            """
-            config = read_config()
-            url = config['url']
-            wait_time = config.get('wait_time', 10)
+        def execute_bookmarklet(driver, bookmarklet_code):
+            """Esegui il bookmarklet JavaScript"""
+            print("⚙️  Esecuzione bookmarklet...")
             
-            print(f"🎯 Metodo semplice per: {url}")
-            
-            # 1. Screenshot con Chrome headless
-            print("📸 Cattura screenshot...")
             try:
-                subprocess.run([
-                    'google-chrome-stable',
-                    '--headless=new',
-                    '--no-sandbox',
-                    '--disable-gpu',
-                    f'--window-size=1920,1080',
-                    f'--screenshot=screenshot.png',
-                    url
-                ], timeout=30, check=False)
+                # Wrap del codice se necessario
+                if not bookmarklet_code.strip().startswith('('):
+                    bookmarklet_code = f'(async function(){{{bookmarklet_code}}})()'
                 
-                if os.path.exists('screenshot.png'):
-                    print("✅ Screenshot salvato: screenshot.png")
+                # Esegui il bookmarklet
+                driver.execute_script(bookmarklet_code)
+                print("✅ Bookmarklet eseguito")
+                
+                return True
             except Exception as e:
-                print(f"⚠️  Screenshot fallito: {e}")
+                print(f"❌ Errore esecuzione bookmarklet: {e}")
+                return False
+        
+        def wait_for_scraping_complete(driver, max_wait=1200):
+            """Attendi completamento scraping (overlay con 'finito')"""
+            print(f"⏰ Attendo completamento scraping (max {max_wait//60} minuti)...")
             
-            # 2. Download HTML con curl
-            print("🌐 Download HTML...")
-            try:
-                # User-Agent realistico
-                user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                
-                curl_cmd = [
-                    'curl', '-s', '-L',
-                    '-A', user_agent,
-                    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    '-H', 'Accept-Language: en-US,en;q=0.9',
-                    '-o', 'page.html',
-                    url
-                ]
-                
-                result = subprocess.run(curl_cmd, timeout=30, capture_output=True, text=True)
-                
-                if os.path.exists('page.html') and os.path.getsize('page.html') > 0:
-                    lines = sum(1 for line in open('page.html'))
-                    print(f"✅ HTML scaricato: {lines} linee")
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait:
+                try:
+                    # Cerca overlay di stato
+                    overlay_text = driver.execute_script("""
+                        const overlay = document.getElementById('imm-scr-status');
+                        return overlay ? overlay.textContent : null;
+                    """)
                     
-                    # Estrai titolo dall'HTML
-                    with open('page.html', 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read(5000)
-                        if '<title>' in content:
-                            start = content.find('<title>') + 7
-                            end = content.find('</title>')
-                            title = content[start:end].strip()
-                            print(f"📄 Titolo trovato: {title}")
-                else:
-                    print("⚠️  HTML non scaricato o vuoto")
-            except Exception as e:
-                print(f"⚠️  Download HTML fallito: {e}")
+                    if overlay_text:
+                        print(f"   Status: {overlay_text}")
+                        
+                        if 'finito' in overlay_text.lower():
+                            print("✅ Scraping completato!")
+                            return True
+                    
+                    time.sleep(5)
+                    
+                except Exception as e:
+                    print(f"⚠️  Errore controllo status: {e}")
+                    time.sleep(5)
             
-            # 3. Crea file dati basato su scraper.js
-            print("📝 Creazione file dati...")
+            print("⚠️  Timeout - recupero dati parziali")
+            return False
+        
+        def extract_data_from_localstorage(driver):
+            """Estrai dati dal localStorage"""
+            print("📥 Estrazione dati da localStorage...")
+            
             try:
-                with open('scraper.js', 'r') as f:
-                    scraper_code = f.read()
+                data = driver.execute_script("""
+                    const key = 'immobiliare_scrape_data_v3';
+                    const data = localStorage.getItem(key);
+                    return data ? JSON.parse(data) : null;
+                """)
                 
-                data = {
-                    'url': url,
+                if data and len(data) > 0:
+                    print(f"✅ Estratti {len(data)} immobili da localStorage")
+                    return data
+                else:
+                    print("⚠️  Nessun dato in localStorage")
+                    return None
+                    
+            except Exception as e:
+                print(f"❌ Errore estrazione localStorage: {e}")
+                return None
+        
+        def save_results(data, driver):
+            """Salva risultati in file"""
+            print("💾 Salvataggio risultati...")
+            
+            output_dir = Path('./scraped_data')
+            output_dir.mkdir(exist_ok=True)
+            
+            timestamp = time.strftime('%Y-%m-%dT%H-%M-%S')
+            
+            # Salva JSON dati
+            if data:
+                json_file = output_dir / f'immobiliare_{timestamp}.json'
+                with open(json_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                print(f"✅ Dati salvati: {json_file}")
+                
+                # Salva anche latest
+                latest_file = output_dir / 'immobiliare_latest.json'
+                with open(latest_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                # Summary
+                with_price = sum(1 for item in data if item.get('price'))
+                with_surface = sum(1 for item in data if item.get('surface'))
+                with_photo = sum(1 for item in data if item.get('photo'))
+                
+                summary = {
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'scraper_code': scraper_code,
-                    'method': 'simple_chrome_curl'
+                    'totalItems': len(data),
+                    'stats': {
+                        'withPrice': with_price,
+                        'withSurface': with_surface,
+                        'withPhoto': with_photo
+                    },
+                    'method': 'selenium_chrome_real',
+                    'success': True
                 }
                 
-                with open('scraped_data.json', 'w') as f:
-                    json.dump(data, f, indent=2)
+                summary_file = output_dir / f'summary_{timestamp}.json'
+                with open(summary_file, 'w') as f:
+                    json.dump(summary, f, indent=2)
                 
-                print("✅ Dati salvati: scraped_data.json")
-                
+                latest_summary = output_dir / 'summary_latest.json'
+                with open(latest_summary, 'w') as f:
+                    json.dump(summary, f, indent=2)
+            
+            # Screenshot
+            try:
+                screenshot_file = output_dir / f'screenshot_{timestamp}.png'
+                driver.save_screenshot(str(screenshot_file))
+                print(f"📸 Screenshot salvato: {screenshot_file}")
             except Exception as e:
-                print(f"⚠️  Creazione dati fallita: {e}")
+                print(f"⚠️  Screenshot fallito: {e}")
             
             return True
         
         def main():
             print("=" * 60)
-            print("CHROME BOOKMARKLET SCRAPER")
+            print("IMMOBILIARE.IT SCRAPER - Chrome Reale")
             print("=" * 60)
             
             # Leggi configurazione
-            config = read_config()
-            url = config.get('url', 'https://example.com')
-            site_name = config.get('name', 'Unknown Site')
+            target_url = read_config()
+            bookmarklet_code = read_bookmarklet()
             
-            print(f"🎯 Target: {site_name}")
-            print(f"🔗 URL: {url}")
+            print(f"🎯 Target URL: {target_url}")
+            print(f"📄 Bookmarklet: {len(bookmarklet_code)} caratteri")
             
-            # Prova metodo semplice (più affidabile)
-            success = execute_bookmarklet_simple()
+            driver = None
             
-            if success:
-                # Controlla file generati
-                files = []
-                for f in ['screenshot.png', 'page.html', 'scraped_data.json']:
-                    if os.path.exists(f):
-                        size = os.path.getsize(f)
-                        files.append((f, size))
+            try:
+                # Setup Chrome
+                print("\n🚀 Avvio Chrome...")
+                driver = setup_chrome_driver()
+                print("✅ Chrome avviato")
                 
-                if files:
-                    print("\n✅ SCRAPING COMPLETATO")
-                    print("📁 File generati:")
-                    for fname, fsize in files:
-                        print(f"   📄 {fname} ({fsize} bytes)")
-                else:
-                    print("\n⚠️  Nessun file generato")
-                    return False
+                # Naviga al sito
+                print(f"\n🌐 Navigazione a: {target_url}")
+                driver.get(target_url)
                 
+                # Attendi caricamento
+                wait_for_page_load(driver)
+                print(f"✅ Pagina caricata: {driver.title}")
+                
+                # Comportamento umano
+                simulate_human_behavior(driver)
+                
+                # Cookie banner
+                handle_cookie_banner(driver)
+                
+                # Esegui bookmarklet
+                if not execute_bookmarklet(driver, bookmarklet_code):
+                    raise Exception("Bookmarklet execution failed")
+                
+                # Attendi completamento
+                completed = wait_for_scraping_complete(driver, max_wait=1200)
+                
+                # Estrai dati
+                scraped_data = extract_data_from_localstorage(driver)
+                
+                if not scraped_data or len(scraped_data) == 0:
+                    # Screenshot per debug
+                    driver.save_screenshot('error_screenshot.png')
+                    raise Exception("Nessun dato estratto")
+                
+                # Salva risultati
+                save_results(scraped_data, driver)
+                
+                print(f"\n✅ SCRAPING COMPLETATO: {len(scraped_data)} immobili")
                 return True
-            else:
-                print("\n❌ SCRAPING FALLITO")
+                
+            except Exception as e:
+                print(f"\n❌ ERRORE: {e}")
+                
+                if driver:
+                    try:
+                        driver.save_screenshot('error_screenshot.png')
+                        print("📸 Screenshot di errore salvato")
+                    except:
+                        pass
+                
                 return False
+                
+            finally:
+                if driver:
+                    print("\n🔚 Chiusura Chrome...")
+                    driver.quit()
         
         if __name__ == '__main__':
             try:
@@ -332,18 +408,27 @@ jobs:
                 import traceback
                 traceback.print_exc()
                 exit(1)
-        EOF
+        PYSCRIPT
         
         echo "✅ Script Python creato"
     
-    - name: Run scraping
-      timeout-minutes: 10
+    - name: Setup Xvfb for headless display
       run: |
-        echo "🎬 Avvio scraping..."
-        python3 automate_chrome.py
+        sudo apt-get install -y xvfb
+        export DISPLAY=:99
+        Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+        sleep 3
+        echo "✅ Display virtuale avviato"
+    
+    - name: Run Chrome scraping
+      timeout-minutes: 25
+      run: |
+        echo "🎬 Avvio scraping con Chrome reale..."
+        xvfb-run --auto-servernum python3 chrome_scraper.py
         
-        echo "📂 Contenuto directory dopo scraping:"
-        ls -la
+        echo ""
+        echo "📂 Contenuto scraped_data/:"
+        ls -la scraped_data/ 2>/dev/null || echo "Directory vuota o non esistente"
     
     - name: Create summary report
       if: always()
@@ -351,91 +436,35 @@ jobs:
         echo "📊 CREAZIONE REPORT"
         echo "=================="
         
-        # Controlla file esistenti
-        FILES_EXIST=false
-        
-        if [ -f "scraped_data.json" ]; then
-          echo "✅ scraped_data.json trovato"
-          echo "Contenuto:"
-          jq -r '.url, .timestamp' scraped_data.json
-          FILES_EXIST=true
+        if [ -f "scraped_data/summary_latest.json" ]; then
+          echo "✅ Summary trovato:"
+          cat scraped_data/summary_latest.json
+        else
+          echo "⚠️  Nessun summary trovato"
         fi
         
-        if [ -f "screenshot.png" ]; then
-          echo "✅ screenshot.png trovato ($(wc -c < screenshot.png) bytes)"
-          FILES_EXIST=true
+        if [ -f "scraped_data/immobiliare_latest.json" ]; then
+          ITEMS=$(jq 'length' scraped_data/immobiliare_latest.json)
+          echo "✅ Dati trovati: ${ITEMS} immobili"
+        else
+          echo "⚠️  Nessun dato trovato"
         fi
-        
-        if [ -f "page.html" ]; then
-          LINES=$(wc -l < page.html 2>/dev/null || echo "0")
-          echo "✅ page.html trovato ($LINES linee)"
-          FILES_EXIST=true
-          
-          # Estrai titolo se presente
-          TITLE=$(grep -o '<title>[^<]*</title>' page.html | sed 's/<title>//;s/<\/title>//' | head -1)
-          if [ -n "$TITLE" ]; then
-            echo "📄 Titolo HTML: $TITLE"
-          fi
-        fi
-        
-        # Crea report markdown
-        cat > REPORT.md << EOF
-        # Scraping Report
-        
-        **Data**: $(date)
-        **URL**: ${{ env.TARGET_URL }}
-        **Sito**: ${{ env.SITE_NAME }}
-        
-        ## File Generati
-        
-        EOF
-        
-        if [ -f "scraped_data.json" ]; then
-          echo "- 📄 **scraped_data.json**" >> REPORT.md
-        fi
-        
-        if [ -f "screenshot.png" ]; then
-          echo "- 📸 **screenshot.png**" >> REPORT.md
-        fi
-        
-        if [ -f "page.html" ]; then
-          echo "- 🌐 **page.html**" >> REPORT.md
-        fi
-        
-        if [ "$FILES_EXIST" = "false" ]; then
-          echo "❌ **Nessun file generato**" >> REPORT.md
-        fi
-        
-        echo "" >> REPORT.md
-        echo "## Log Scraping" >> REPORT.md
-        echo '```' >> REPORT.md
-        echo "Workflow: ${{ github.workflow }}" >> REPORT.md
-        echo "Run ID: ${{ github.run_id }}" >> REPORT.md
-        echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> REPORT.md
-        echo '```' >> REPORT.md
-        
-        cat REPORT.md
     
-    - name: Upload results as artifact
+    - name: Upload results
       uses: actions/upload-artifact@v4
+      if: always()
       with:
-        name: scraping-results
+        name: immobiliare-data-${{ github.run_number }}
         path: |
-          scraped_data.json
-          screenshot.png
-          page.html
-          REPORT.md
-          scrape.json
-          scraper.js
-        retention-days: 30
-        if-no-files-found: warn
+          scraped_data/
+          error_screenshot.png
+        retention-days: 90
     
-    - name: Notify success
+    - name: Commit and push results
       if: success()
       run: |
-        echo "✅ SCRAPING COMPLETATO CON SUCCESSO"
-        echo "==================================="
-        echo "URL: ${{ env.TARGET_URL }}"
-        echo "Artifact: scraping-results"
-        echo ""
-        echo "File disponibili nel download artifact"
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add scraped_data/*.json 2>/dev/null || true
+        git commit -m "🏠 Update $(date +'%Y-%m-%d %H:%M')" || true
+        git push || true
