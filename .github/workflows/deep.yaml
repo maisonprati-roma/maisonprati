@@ -1,64 +1,4 @@
-def check_for_captcha(driver):
-            """Verifica se è presente un CAPTCHA"""
-            try:
-                page_source = driver.page_source.lower()
-                page_title = driver.title.lower()
-                
-                captcha_indicators = [
-                    'captcha',
-                    'cf-challenge',
-                    'challenge-platform',
-                    'just a moment',
-                    'checking your browser',
-                    'verify you are human',
-                    'access denied',
-                    'blocked'
-                ]
-                
-                for indicator in captcha_indicators:
-                    if indicator in page_source or indicator in page_title:
-                        return True, indicator
-                
-                return False, None
-                
-            except Exception as e:
-                print(f"⚠️  Errore check CAPTCHA: {e}")
-                return False, None
-        
-        def wait_for_captcha_or_page(driver, max_wait=120):
-            """Attendi che CAPTCHA scompaia o che la pagina si carichi"""
-            print(f"🔍 Controllo CAPTCHA (attesa max {max_wait}s)...")
-            
-            start_time = time.time()
-            captcha_detected = False
-            
-            while time.time() - start_time < max_wait:
-                has_captcha, indicator = check_for_captcha(driver)
-                
-                if has_captcha and not captcha_detected:
-                    captcha_detected = True
-                    print(f"⚠️  CAPTCHA RILEVATO: {indicator}")
-                    print(f"   Attendo che scompaia automaticamente (Cloudflare auto-solve)...")
-                    print(f"   Tempo trascorso: {int(time.time() - start_time)}s / {max_wait}s")
-                    
-                elif captcha_detected and not has_captcha:
-                    print(f"✅ CAPTCHA superato dopo {int(time.time() - start_time)}s!")
-                    time.sleep(5)
-                    return True
-                
-                elif not has_captcha and not captcha_detected:
-                    print("✅ Nessun CAPTCHA rilevato")
-                    return True
-                
-                time.sleep(3)
-            
-            if captcha_detected:
-                print(f"❌ CAPTCHA ancora presente dopo {max_wait}s")
-                driver.save_screenshot('captcha_screenshot.png')
-                print("📸 Screenshot CAPTCHA salvato: captcha_screenshot.png")
-                return False
-            
-            return Truename: Scraping Immobiliare.it con Chrome Reale
+name: Deep Exec - Immobiliare.it
 
 on:
   workflow_dispatch:
@@ -70,7 +10,7 @@ on:
     - cron: '0 2 * * *'
 
 jobs:
-  scrape:
+  deep_exec:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
@@ -82,7 +22,7 @@ jobs:
     
     - name: Verify required files
       run: |
-        echo "📂 Verifica file necessari..."
+        echo "📂 Verifica file necessari per deep_exec..."
         
         if [ ! -f "scrape.json" ]; then
           echo "❌ ERRORE: scrape.json non trovato"
@@ -96,17 +36,17 @@ jobs:
         
         echo "✅ File trovati"
         echo ""
-        echo "📄 scrape.json:"
+        echo "📄 Configurazione scrape.json:"
         cat scrape.json
     
     - name: Read configuration
       id: config
       run: |
-        echo "📖 Lettura configurazione da scrape.json..."
+        echo "📖 Lettura configurazione..."
         
         TARGET_URL=$(jq -r '.url' scrape.json)
         if [ -z "$TARGET_URL" ] || [ "$TARGET_URL" = "null" ]; then
-          echo "❌ ERRORE: URL non trovato in scrape.json"
+          echo "❌ URL non trovato in scrape.json"
           exit 1
         fi
         
@@ -115,7 +55,7 @@ jobs:
     
     - name: Install Chrome and dependencies
       run: |
-        echo "🛠️ Installazione Chrome e dipendenze..."
+        echo "🛠️ Installazione Chrome e dipendenze per deep_exec..."
         sudo apt-get update -qq
         sudo apt-get install -y \
           google-chrome-stable \
@@ -127,16 +67,16 @@ jobs:
         
         pip3 install selenium webdriver-manager
         
-        echo "✅ Chrome versione:"
+        echo "✅ Chrome installato:"
         google-chrome --version
     
-    - name: Create Python scraper with Chrome
+    - name: Create deep_exec Python scraper
       run: |
-        cat > chrome_scraper.py << 'PYSCRIPT'
+        cat > deep_exec_scraper.py << 'DEEPEXEC'
         import os
         import json
         import time
-        import base64
+        import sys
         from pathlib import Path
         from selenium import webdriver
         from selenium.webdriver.chrome.service import Service
@@ -144,24 +84,35 @@ jobs:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.common.action_chains import ActionChains
         from webdriver_manager.chrome import ChromeDriverManager
+        
+        print("=" * 70)
+        print("DEEP_EXEC - Immobiliare.it Advanced Scraper")
+        print("=" * 70)
         
         def read_config():
             """Leggi URL da scrape.json"""
             with open('scrape.json', 'r') as f:
                 config = json.load(f)
-            return config.get('url')
+            url = config.get('url')
+            print(f"📖 Config loaded: {url}")
+            return url
         
         def read_bookmarklet():
             """Leggi bookmarklet da scraper.js"""
             with open('scraper.js', 'r', encoding='utf-8') as f:
-                return f.read()
+                code = f.read()
+            print(f"📄 Bookmarklet loaded: {len(code)} chars")
+            return code
         
         def setup_chrome_driver():
-            """Configura Chrome con opzioni stealth massime"""
+            """Configura Chrome con stealth massimo"""
+            print("\n🔧 Configurazione Chrome con stealth massimo...")
+            
             chrome_options = Options()
             
-            # Argomenti Chrome per sembrare umano
+            # Argomenti Chrome
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -172,11 +123,13 @@ jobs:
             chrome_options.add_argument('--disable-gpu')
             chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
             chrome_options.add_argument('--disable-site-isolation-trials')
+            chrome_options.add_argument('--disable-web-security')
             
-            # IMPORTANTE: User agent completo e realistico
-            chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+            # User agent realistico
+            user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            chrome_options.add_argument(f'--user-agent={user_agent}')
             
-            # Preferenze avanzate per sembrare un browser reale
+            # Preferenze
             prefs = {
                 'download.default_directory': os.getcwd(),
                 'download.prompt_for_download': False,
@@ -193,362 +146,376 @@ jobs:
             chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
-            # Installa ChromeDriver
+            # Installa e avvia ChromeDriver
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            # Script anti-detection MASSIVO
+            # Script anti-detection avanzato
+            stealth_script = '''
+                // Rimuovi webdriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Chrome runtime completo
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                
+                // Plugins
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [
+                        {0: {type: "application/x-google-chrome-pdf"}, description: "Portable Document Format", filename: "internal-pdf-viewer", length: 1, name: "Chrome PDF Plugin"},
+                        {0: {type: "application/pdf"}, description: "PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", length: 1, name: "Chrome PDF Viewer"}
+                    ]
+                });
+                
+                // Languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['it-IT', 'it', 'en-US', 'en']
+                });
+                
+                // Hardware
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 8
+                });
+                
+                Object.defineProperty(navigator, 'deviceMemory', {
+                    get: () => 8
+                });
+                
+                // Permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' 
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters)
+                );
+                
+                // WebGL
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                    if (parameter === 37445) return 'Intel Inc.';
+                    if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                    return getParameter.call(this, parameter);
+                };
+                
+                // Connection
+                Object.defineProperty(navigator, 'connection', {
+                    get: () => ({
+                        effectiveType: '4g',
+                        rtt: 50,
+                        downlink: 10,
+                        saveData: false
+                    })
+                });
+            '''
+            
             driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    // Rimuovi webdriver
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    
-                    // Chrome runtime completo
-                    window.chrome = {
-                        runtime: {},
-                        loadTimes: function() {},
-                        csi: function() {},
-                        app: {}
-                    };
-                    
-                    // Plugins realistici
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [
-                            {0: {type: "application/x-google-chrome-pdf"}, description: "Portable Document Format", filename: "internal-pdf-viewer", length: 1, name: "Chrome PDF Plugin"},
-                            {0: {type: "application/pdf"}, description: "Portable Document Format", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", length: 1, name: "Chrome PDF Viewer"}
-                        ]
-                    });
-                    
-                    // Languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['it-IT', 'it', 'en-US', 'en']
-                    });
-                    
-                    // Hardware
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {
-                        get: () => 8
-                    });
-                    
-                    Object.defineProperty(navigator, 'deviceMemory', {
-                        get: () => 8
-                    });
-                    
-                    // Permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' 
-                            ? Promise.resolve({ state: Notification.permission })
-                            : originalQuery(parameters)
-                    );
-                    
-                    // WebGL
-                    const getParameter = WebGLRenderingContext.prototype.getParameter;
-                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                        if (parameter === 37445) return 'Intel Inc.';
-                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                        return getParameter.call(this, parameter);
-                    };
-                    
-                    // Connection
-                    Object.defineProperty(navigator, 'connection', {
-                        get: () => ({
-                            effectiveType: '4g',
-                            rtt: 50,
-                            downlink: 10,
-                            saveData: false
-                        })
-                    });
-                '''
+                'source': stealth_script
             })
             
-            # Imposta timeout implicito
             driver.implicitly_wait(10)
+            print("✅ Chrome configurato con stealth")
             
             return driver
         
-        def wait_for_page_load(driver, timeout=30):
-            """Attendi caricamento completo pagina"""
+        def check_for_captcha(driver):
+            """Verifica presenza CAPTCHA"""
             try:
-                WebDriverWait(driver, timeout).until(
-                    lambda d: d.execute_script('return document.readyState') == 'complete'
-                )
-                return True
+                page_source = driver.page_source.lower()
+                page_title = driver.title.lower()
+                
+                indicators = [
+                    'captcha', 'cf-challenge', 'challenge-platform',
+                    'just a moment', 'checking your browser',
+                    'verify you are human', 'access denied', 'blocked'
+                ]
+                
+                for indicator in indicators:
+                    if indicator in page_source or indicator in page_title:
+                        return True, indicator
+                
+                return False, None
             except:
-                return False
+                return False, None
+        
+        def wait_for_captcha_resolution(driver, max_wait=180):
+            """Attendi risoluzione automatica CAPTCHA"""
+            print(f"\n🔍 Controllo CAPTCHA (attesa max {max_wait}s)...")
+            
+            start = time.time()
+            captcha_seen = False
+            
+            while time.time() - start < max_wait:
+                has_captcha, indicator = check_for_captcha(driver)
+                elapsed = int(time.time() - start)
+                
+                if has_captcha and not captcha_seen:
+                    captcha_seen = True
+                    print(f"⚠️  CAPTCHA rilevato: {indicator}")
+                    print(f"   Attendo auto-solve Cloudflare...")
+                
+                if has_captcha:
+                    sys.stdout.write(f"\r   ⏳ Attesa: {elapsed}s / {max_wait}s")
+                    sys.stdout.flush()
+                    time.sleep(3)
+                    continue
+                
+                if captcha_seen and not has_captcha:
+                    print(f"\n✅ CAPTCHA superato dopo {elapsed}s!")
+                    time.sleep(5)
+                    return True
+                
+                if not captcha_seen:
+                    print("✅ Nessun CAPTCHA rilevato")
+                    return True
+            
+            print(f"\n❌ CAPTCHA persistente dopo {max_wait}s")
+            driver.save_screenshot('captcha_screenshot.png')
+            print("📸 Screenshot salvato: captcha_screenshot.png")
+            return False
         
         def simulate_human_behavior(driver):
-            """Simula comportamento umano MOLTO realistico"""
-            print("🖱️  Simulazione comportamento umano intensivo...")
+            """Comportamento umano realistico"""
+            print("\n🖱️  Simulazione comportamento umano...")
             
-            # Attesa iniziale LUNGA
-            print("   ⏳ Attesa iniziale 15 secondi...")
+            # Attesa iniziale
+            print("   ⏳ Attesa iniziale: 15s")
             time.sleep(15)
             
-            # Movimenti mouse randomici (se possibile)
+            # Movimenti mouse
             try:
-                from selenium.webdriver.common.action_chains import ActionChains
                 actions = ActionChains(driver)
-                
-                # 10 movimenti graduali
                 for i in range(10):
-                    x_offset = int((i % 2 - 0.5) * 200)
-                    y_offset = int((i % 3 - 1) * 100)
-                    actions.move_by_offset(x_offset, y_offset).perform()
-                    time.sleep(0.3 + (i % 3) * 0.2)
-                
-                print("   ✅ Movimenti mouse simulati")
+                    x = int((i % 2 - 0.5) * 200)
+                    y = int((i % 3 - 1) * 100)
+                    actions.move_by_offset(x, y).perform()
+                    time.sleep(0.4)
+                print("   ✅ Movimenti mouse: 10x")
             except Exception as e:
-                print(f"   ⚠️  Movimenti mouse saltati: {e}")
+                print(f"   ⚠️  Mouse skip: {e}")
             
-            # Scroll naturale multi-step
-            scroll_positions = [0, 200, 500, 800, 1200, 1600, 2000, 1600, 1200, 800, 400, 0]
-            
-            for i, pos in enumerate(scroll_positions):
+            # Scroll naturale
+            positions = [0, 200, 500, 800, 1200, 1600, 2000, 1600, 1200, 800, 400, 0]
+            for i, pos in enumerate(positions):
                 driver.execute_script(f'window.scrollTo({{top: {pos}, behavior: "smooth"}});')
-                wait_time = 1.5 + (i % 3) * 0.5
-                print(f"   📜 Scroll a {pos}px (attesa {wait_time:.1f}s)")
-                time.sleep(wait_time)
+                wait = 1.5 + (i % 3) * 0.5
+                time.sleep(wait)
+            print("   ✅ Scroll: 12 posizioni")
             
-            # Click su elementi casuali (non interattivi)
+            # Click casuale
             try:
-                # Cerca div o span sicuri
-                safe_elements = driver.find_elements(By.CSS_SELECTOR, 'div.content, span, p')
-                if len(safe_elements) > 5:
+                elements = driver.find_elements(By.CSS_SELECTOR, 'div, span, p')
+                if elements:
                     import random
-                    element = random.choice(safe_elements[:10])
-                    driver.execute_script("arguments[0].click();", element)
-                    print("   🖱️  Click casuale eseguito")
+                    elem = random.choice(elements[:10])
+                    driver.execute_script("arguments[0].click();", elem)
+                    print("   ✅ Click casuale")
                     time.sleep(2)
             except:
                 pass
             
             # Attesa finale
-            print("   ⏳ Attesa finale 10 secondi...")
+            print("   ⏳ Attesa finale: 10s")
             time.sleep(10)
+            print("✅ Comportamento umano completato (~50s totali)")
         
         def handle_cookie_banner(driver):
-            """Gestisci cookie banner se presente"""
-            print("🍪 Gestione cookie banner...")
-            
-            selectors = [
-                'button:has-text("Accetta")',
-                'button:has-text("Acconsento")',
-                'button[id*="accept"]',
-                'button[class*="cookie"]',
-                '#didomi-notice-agree-button'
-            ]
-            
-            for selector in selectors:
-                try:
-                    # Prova con JavaScript
-                    script = f"""
-                        const buttons = document.querySelectorAll('button');
-                        for (let btn of buttons) {{
-                            if (btn.textContent.includes('Accetta') || 
-                                btn.textContent.includes('Acconsento')) {{
-                                btn.click();
-                                return true;
-                            }}
-                        }}
-                        return false;
-                    """
-                    if driver.execute_script(script):
-                        print("✅ Cookie banner gestito")
-                        time.sleep(2)
-                        return
-                except:
-                    continue
-            
-            print("ℹ️  Nessun cookie banner rilevato")
-        
-        def execute_bookmarklet(driver, bookmarklet_code):
-            """Esegui il bookmarklet JavaScript"""
-            print("⚙️  Esecuzione bookmarklet...")
+            """Gestisci cookie banner"""
+            print("\n🍪 Gestione cookie banner...")
             
             try:
-                # Wrap del codice se necessario
-                if not bookmarklet_code.strip().startswith('('):
-                    bookmarklet_code = f'(async function(){{{bookmarklet_code}}})()'
+                script = """
+                    const buttons = document.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        const text = btn.textContent.toLowerCase();
+                        if (text.includes('accetta') || text.includes('acconsento') || 
+                            text.includes('accept') || text.includes('agree')) {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                """
+                if driver.execute_script(script):
+                    print("✅ Cookie banner gestito")
+                    time.sleep(2)
+                else:
+                    print("ℹ️  Nessun cookie banner trovato")
+            except Exception as e:
+                print(f"⚠️  Cookie handler error: {e}")
+        
+        def execute_bookmarklet(driver, code):
+            """Esegui bookmarklet"""
+            print("\n⚙️  Esecuzione bookmarklet...")
+            
+            try:
+                # Wrap se necessario
+                if not code.strip().startswith('('):
+                    code = f'(async function(){{{code}}})()'
                 
-                # Esegui il bookmarklet
-                driver.execute_script(bookmarklet_code)
+                driver.execute_script(code)
                 print("✅ Bookmarklet eseguito")
-                
                 return True
             except Exception as e:
-                print(f"❌ Errore esecuzione bookmarklet: {e}")
+                print(f"❌ Errore esecuzione: {e}")
                 return False
         
         def wait_for_scraping_complete(driver, max_wait=1200):
-            """Attendi completamento scraping (overlay con 'finito')"""
-            print(f"⏰ Attendo completamento scraping (max {max_wait//60} minuti)...")
+            """Attendi completamento scraping"""
+            print(f"\n⏰ Attendo completamento (max {max_wait//60} min)...")
             
-            start_time = time.time()
+            start = time.time()
+            last_status = ""
             
-            while time.time() - start_time < max_wait:
+            while time.time() - start < max_wait:
                 try:
-                    # Cerca overlay di stato
-                    overlay_text = driver.execute_script("""
+                    status = driver.execute_script("""
                         const overlay = document.getElementById('imm-scr-status');
                         return overlay ? overlay.textContent : null;
                     """)
                     
-                    if overlay_text:
-                        print(f"   Status: {overlay_text}")
-                        
-                        if 'finito' in overlay_text.lower():
-                            print("✅ Scraping completato!")
-                            return True
+                    if status and status != last_status:
+                        print(f"   📊 {status}")
+                        last_status = status
+                    
+                    if status and 'finito' in status.lower():
+                        elapsed = int(time.time() - start)
+                        print(f"✅ Completato in {elapsed}s!")
+                        return True
                     
                     time.sleep(5)
-                    
-                except Exception as e:
-                    print(f"⚠️  Errore controllo status: {e}")
+                except:
                     time.sleep(5)
             
             print("⚠️  Timeout - recupero dati parziali")
             return False
         
-        def extract_data_from_localstorage(driver):
-            """Estrai dati dal localStorage"""
-            print("📥 Estrazione dati da localStorage...")
+        def extract_data(driver):
+            """Estrai dati da localStorage"""
+            print("\n📥 Estrazione dati da localStorage...")
             
             try:
                 data = driver.execute_script("""
                     const key = 'immobiliare_scrape_data_v3';
-                    const data = localStorage.getItem(key);
-                    return data ? JSON.parse(data) : null;
+                    const raw = localStorage.getItem(key);
+                    return raw ? JSON.parse(raw) : null;
                 """)
                 
                 if data and len(data) > 0:
-                    print(f"✅ Estratti {len(data)} immobili da localStorage")
+                    print(f"✅ Estratti {len(data)} immobili")
                     return data
                 else:
-                    print("⚠️  Nessun dato in localStorage")
+                    print("⚠️  Nessun dato trovato")
                     return None
-                    
             except Exception as e:
-                print(f"❌ Errore estrazione localStorage: {e}")
+                print(f"❌ Errore estrazione: {e}")
                 return None
         
         def save_results(data, driver):
-            """Salva risultati in file"""
-            print("💾 Salvataggio risultati...")
+            """Salva risultati"""
+            print("\n💾 Salvataggio risultati...")
             
-            output_dir = Path('./scraped_data')
-            output_dir.mkdir(exist_ok=True)
+            output = Path('./scraped_data')
+            output.mkdir(exist_ok=True)
             
-            timestamp = time.strftime('%Y-%m-%dT%H-%M-%S')
+            ts = time.strftime('%Y-%m-%dT%H-%M-%S')
             
-            # Salva JSON dati
             if data:
-                json_file = output_dir / f'immobiliare_{timestamp}.json'
+                # JSON dati
+                json_file = output / f'immobiliare_{ts}.json'
                 with open(json_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-                print(f"✅ Dati salvati: {json_file}")
+                print(f"✅ Dati: {json_file}")
                 
-                # Salva anche latest
-                latest_file = output_dir / 'immobiliare_latest.json'
-                with open(latest_file, 'w', encoding='utf-8') as f:
+                # Latest
+                latest = output / 'immobiliare_latest.json'
+                with open(latest, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                 
                 # Summary
-                with_price = sum(1 for item in data if item.get('price'))
-                with_surface = sum(1 for item in data if item.get('surface'))
-                with_photo = sum(1 for item in data if item.get('photo'))
-                
                 summary = {
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
                     'totalItems': len(data),
                     'stats': {
-                        'withPrice': with_price,
-                        'withSurface': with_surface,
-                        'withPhoto': with_photo
+                        'withPrice': sum(1 for i in data if i.get('price')),
+                        'withSurface': sum(1 for i in data if i.get('surface')),
+                        'withPhoto': sum(1 for i in data if i.get('photo'))
                     },
-                    'method': 'selenium_chrome_real',
+                    'method': 'deep_exec_selenium',
                     'success': True
                 }
                 
-                summary_file = output_dir / f'summary_{timestamp}.json'
+                summary_file = output / f'summary_{ts}.json'
                 with open(summary_file, 'w') as f:
                     json.dump(summary, f, indent=2)
                 
-                latest_summary = output_dir / 'summary_latest.json'
-                with open(latest_summary, 'w') as f:
+                summary_latest = output / 'summary_latest.json'
+                with open(summary_latest, 'w') as f:
                     json.dump(summary, f, indent=2)
+                
+                print(f"✅ Summary: {summary_file}")
             
             # Screenshot
             try:
-                screenshot_file = output_dir / f'screenshot_{timestamp}.png'
-                driver.save_screenshot(str(screenshot_file))
-                print(f"📸 Screenshot salvato: {screenshot_file}")
+                screenshot = output / f'screenshot_{ts}.png'
+                driver.save_screenshot(str(screenshot))
+                print(f"📸 Screenshot: {screenshot}")
             except Exception as e:
-                print(f"⚠️  Screenshot fallito: {e}")
+                print(f"⚠️  Screenshot failed: {e}")
             
             return True
         
         def main():
-            print("=" * 60)
-            print("IMMOBILIARE.IT SCRAPER - Chrome Reale")
-            print("=" * 60)
-            
-            # Leggi configurazione
             target_url = read_config()
-            bookmarklet_code = read_bookmarklet()
-            
-            print(f"🎯 Target URL: {target_url}")
-            print(f"📄 Bookmarklet: {len(bookmarklet_code)} caratteri")
+            bookmarklet = read_bookmarklet()
             
             driver = None
             
             try:
-                # Setup Chrome
-                print("\n🚀 Avvio Chrome...")
+                # Setup
                 driver = setup_chrome_driver()
-                print("✅ Chrome avviato")
+                print("\n🚀 Chrome avviato")
                 
-                # Naviga al sito
-                print(f"\n🌐 Navigazione a: {target_url}")
+                # Naviga
+                print(f"\n🌐 Navigazione: {target_url}")
                 driver.get(target_url)
+                time.sleep(5)
+                print(f"📄 Pagina: {driver.title}")
                 
-                # Attendi caricamento iniziale
-                wait_for_page_load(driver)
-                print(f"📄 Pagina caricata: {driver.title}")
+                # CAPTCHA check
+                if not wait_for_captcha_resolution(driver, max_wait=180):
+                    raise Exception("CAPTCHA non superato")
                 
-                # IMPORTANTE: Controlla e attendi risoluzione CAPTCHA
-                if not wait_for_captcha_or_page(driver, max_wait=180):
-                    print("❌ CAPTCHA non superato in tempo utile")
-                    print("💡 Suggerimento: Cloudflare a volte risolve automaticamente dopo 30-60s")
-                    raise Exception("CAPTCHA blocking")
-                
-                # Comportamento umano PRIMA di fare qualsiasi cosa
+                # Comportamento umano
                 simulate_human_behavior(driver)
                 
-                # Cookie banner
+                # Cookie
                 handle_cookie_banner(driver)
                 
-                # Esegui bookmarklet
-                if not execute_bookmarklet(driver, bookmarklet_code):
-                    raise Exception("Bookmarklet execution failed")
+                # Bookmarklet
+                if not execute_bookmarklet(driver, bookmarklet):
+                    raise Exception("Bookmarklet failed")
                 
                 # Attendi completamento
                 completed = wait_for_scraping_complete(driver, max_wait=1200)
                 
                 # Estrai dati
-                scraped_data = extract_data_from_localstorage(driver)
+                data = extract_data(driver)
                 
-                if not scraped_data or len(scraped_data) == 0:
-                    # Screenshot per debug
+                if not data or len(data) == 0:
                     driver.save_screenshot('error_screenshot.png')
                     raise Exception("Nessun dato estratto")
                 
-                # Salva risultati
-                save_results(scraped_data, driver)
+                # Salva
+                save_results(data, driver)
                 
-                print(f"\n✅ SCRAPING COMPLETATO: {len(scraped_data)} immobili")
-                return True
+                print(f"\n✅ DEEP_EXEC COMPLETATO: {len(data)} immobili")
+                return 0
                 
             except Exception as e:
                 print(f"\n❌ ERRORE: {e}")
@@ -556,11 +523,11 @@ jobs:
                 if driver:
                     try:
                         driver.save_screenshot('error_screenshot.png')
-                        print("📸 Screenshot di errore salvato")
+                        print("📸 Error screenshot salvato")
                     except:
                         pass
                 
-                return False
+                return 1
                 
             finally:
                 if driver:
@@ -568,72 +535,63 @@ jobs:
                     driver.quit()
         
         if __name__ == '__main__':
-            try:
-                success = main()
-                exit(0 if success else 1)
-            except Exception as e:
-                print(f"\n💥 ERRORE CRITICO: {e}")
-                import traceback
-                traceback.print_exc()
-                exit(1)
-        PYSCRIPT
+            exit(main())
+        DEEPEXEC
         
-        echo "✅ Script Python creato"
+        echo "✅ deep_exec_scraper.py creato"
     
-    - name: Setup Xvfb for headless display
+    - name: Setup Xvfb
       run: |
         sudo apt-get install -y xvfb
-        export DISPLAY=:99
         Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
         sleep 3
-        echo "✅ Display virtuale avviato"
+        echo "✅ Display virtuale pronto"
     
-    - name: Run Chrome scraping
+    - name: Run deep_exec scraper
       timeout-minutes: 25
       run: |
-        echo "🎬 Avvio scraping con Chrome reale..."
-        xvfb-run --auto-servernum python3 chrome_scraper.py
+        echo "🎬 Avvio DEEP_EXEC..."
+        echo "===================="
+        xvfb-run --auto-servernum python3 deep_exec_scraper.py
         
         echo ""
-        echo "📂 Contenuto scraped_data/:"
-        ls -la scraped_data/ 2>/dev/null || echo "Directory vuota o non esistente"
+        echo "📂 Risultati:"
+        ls -lh scraped_data/ 2>/dev/null || echo "Nessun file"
     
-    - name: Create summary report
+    - name: Summary report
       if: always()
       run: |
-        echo "📊 CREAZIONE REPORT"
-        echo "=================="
+        echo "📊 DEEP_EXEC REPORT"
+        echo "==================="
         
         if [ -f "scraped_data/summary_latest.json" ]; then
-          echo "✅ Summary trovato:"
-          cat scraped_data/summary_latest.json
+          echo "✅ Summary:"
+          cat scraped_data/summary_latest.json | jq '.'
         else
-          echo "⚠️  Nessun summary trovato"
+          echo "⚠️  Nessun summary"
         fi
         
         if [ -f "scraped_data/immobiliare_latest.json" ]; then
           ITEMS=$(jq 'length' scraped_data/immobiliare_latest.json)
-          echo "✅ Dati trovati: ${ITEMS} immobili"
-        else
-          echo "⚠️  Nessun dato trovato"
+          echo "✅ Immobili: ${ITEMS}"
         fi
     
-    - name: Upload results
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: immobiliare-data-${{ github.run_number }}
+        name: deep-exec-results-${{ github.run_number }}
         path: |
           scraped_data/
           error_screenshot.png
           captcha_screenshot.png
         retention-days: 90
     
-    - name: Commit and push results
+    - name: Commit results
       if: success()
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add scraped_data/*.json 2>/dev/null || true
-        git commit -m "🏠 Update $(date +'%Y-%m-%d %H:%M')" || true
+        git commit -m "🏠 Deep Exec - $(date +'%Y-%m-%d %H:%M')" || true
         git push || true
