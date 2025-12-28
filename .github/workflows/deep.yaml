@@ -1,4 +1,4 @@
-name: Scraping Immobiliare.it con Chrome Reale
+name: deep exec
 
 on:
   workflow_dispatch:
