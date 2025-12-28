@@ -9,6 +9,10 @@ on:
   schedule:
     - cron: '0 24 * * *'
 
+  permissions:
+        contents: write  # Permette push al repository
+        actions: read    # Permette lettura actions
+
 jobs:
   deep_exec:
     runs-on: ubuntu-latest
