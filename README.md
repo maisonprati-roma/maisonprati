@@ -1,2 +1,4 @@
 # maisonprati
-browser scrape
+browser scrape immobiliare.it
+
+esegui actions deep_exec

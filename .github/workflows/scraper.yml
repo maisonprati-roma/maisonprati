@@ -7,7 +7,7 @@ on:
       - 'scrape.json'
       - 'scraper.js'
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 24 * * *'
 
 jobs:
   deep_exec:
