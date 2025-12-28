@@ -1,4 +1,64 @@
-name: deep exec
+def check_for_captcha(driver):
+            """Verifica se è presente un CAPTCHA"""
+            try:
+                page_source = driver.page_source.lower()
+                page_title = driver.title.lower()
+                
+                captcha_indicators = [
+                    'captcha',
+                    'cf-challenge',
+                    'challenge-platform',
+                    'just a moment',
+                    'checking your browser',
+                    'verify you are human',
+                    'access denied',
+                    'blocked'
+                ]
+                
+                for indicator in captcha_indicators:
+                    if indicator in page_source or indicator in page_title:
+                        return True, indicator
+                
+                return False, None
+                
+            except Exception as e:
+                print(f"⚠️  Errore check CAPTCHA: {e}")
+                return False, None
+        
+        def wait_for_captcha_or_page(driver, max_wait=120):
+            """Attendi che CAPTCHA scompaia o che la pagina si carichi"""
+            print(f"🔍 Controllo CAPTCHA (attesa max {max_wait}s)...")
+            
+            start_time = time.time()
+            captcha_detected = False
+            
+            while time.time() - start_time < max_wait:
+                has_captcha, indicator = check_for_captcha(driver)
+                
+                if has_captcha and not captcha_detected:
+                    captcha_detected = True
+                    print(f"⚠️  CAPTCHA RILEVATO: {indicator}")
+                    print(f"   Attendo che scompaia automaticamente (Cloudflare auto-solve)...")
+                    print(f"   Tempo trascorso: {int(time.time() - start_time)}s / {max_wait}s")
+                    
+                elif captcha_detected and not has_captcha:
+                    print(f"✅ CAPTCHA superato dopo {int(time.time() - start_time)}s!")
+                    time.sleep(5)
+                    return True
+                
+                elif not has_captcha and not captcha_detected:
+                    print("✅ Nessun CAPTCHA rilevato")
+                    return True
+                
+                time.sleep(3)
+            
+            if captcha_detected:
+                print(f"❌ CAPTCHA ancora presente dopo {max_wait}s")
+                driver.save_screenshot('captcha_screenshot.png')
+                print("📸 Screenshot CAPTCHA salvato: captcha_screenshot.png")
+                return False
+            
+            return Truename: Scraping Immobiliare.it con Chrome Reale
 
 on:
   workflow_dispatch:
@@ -98,10 +158,10 @@ jobs:
                 return f.read()
         
         def setup_chrome_driver():
-            """Configura Chrome con opzioni stealth"""
+            """Configura Chrome con opzioni stealth massime"""
             chrome_options = Options()
             
-            # Argomenti Chrome
+            # Argomenti Chrome per sembrare umano
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -110,34 +170,101 @@ jobs:
             chrome_options.add_argument('--start-maximized')
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+            chrome_options.add_argument('--disable-site-isolation-trials')
             
-            # User agent
-            chrome_options.add_argument('--user-agent=Mozilla/5.0')
+            # IMPORTANTE: User agent completo e realistico
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
             
-            # Preferenze
+            # Preferenze avanzate per sembrare un browser reale
             prefs = {
                 'download.default_directory': os.getcwd(),
                 'download.prompt_for_download': False,
                 'download.directory_upgrade': True,
-                'safebrowsing.enabled': False
+                'safebrowsing.enabled': False,
+                'profile.default_content_setting_values.notifications': 2,
+                'credentials_enable_service': False,
+                'profile.password_manager_enabled': False,
+                'webrtc.ip_handling_policy': 'default_public_interface_only',
+                'webrtc.multiple_routes_enabled': False,
+                'webrtc.nonproxied_udp_enabled': False
             }
             chrome_options.add_experimental_option('prefs', prefs)
-            chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+            chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
             # Installa ChromeDriver
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            # Rimuovi webdriver flag
+            # Script anti-detection MASSIVO
             driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': '''
+                    // Rimuovi webdriver
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined
                     });
-                    window.chrome = { runtime: {} };
+                    
+                    // Chrome runtime completo
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                    
+                    // Plugins realistici
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [
+                            {0: {type: "application/x-google-chrome-pdf"}, description: "Portable Document Format", filename: "internal-pdf-viewer", length: 1, name: "Chrome PDF Plugin"},
+                            {0: {type: "application/pdf"}, description: "Portable Document Format", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", length: 1, name: "Chrome PDF Viewer"}
+                        ]
+                    });
+                    
+                    // Languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['it-IT', 'it', 'en-US', 'en']
+                    });
+                    
+                    // Hardware
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => 8
+                    });
+                    
+                    Object.defineProperty(navigator, 'deviceMemory', {
+                        get: () => 8
+                    });
+                    
+                    // Permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' 
+                            ? Promise.resolve({ state: Notification.permission })
+                            : originalQuery(parameters)
+                    );
+                    
+                    // WebGL
+                    const getParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        if (parameter === 37445) return 'Intel Inc.';
+                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                        return getParameter.call(this, parameter);
+                    };
+                    
+                    // Connection
+                    Object.defineProperty(navigator, 'connection', {
+                        get: () => ({
+                            effectiveType: '4g',
+                            rtt: 50,
+                            downlink: 10,
+                            saveData: false
+                        })
+                    });
                 '''
             })
+            
+            # Imposta timeout implicito
+            driver.implicitly_wait(10)
             
             return driver
         
@@ -152,19 +279,54 @@ jobs:
                 return False
         
         def simulate_human_behavior(driver):
-            """Simula comportamento umano"""
-            print("🖱️  Simulazione comportamento umano...")
+            """Simula comportamento umano MOLTO realistico"""
+            print("🖱️  Simulazione comportamento umano intensivo...")
             
-            time.sleep(3)
+            # Attesa iniziale LUNGA
+            print("   ⏳ Attesa iniziale 15 secondi...")
+            time.sleep(15)
             
-            # Scroll naturale
-            for i in range(3):
-                scroll_y = 300 * (i + 1)
-                driver.execute_script(f'window.scrollTo({{top: {scroll_y}, behavior: "smooth"}});')
-                time.sleep(1.5)
+            # Movimenti mouse randomici (se possibile)
+            try:
+                from selenium.webdriver.common.action_chains import ActionChains
+                actions = ActionChains(driver)
+                
+                # 10 movimenti graduali
+                for i in range(10):
+                    x_offset = int((i % 2 - 0.5) * 200)
+                    y_offset = int((i % 3 - 1) * 100)
+                    actions.move_by_offset(x_offset, y_offset).perform()
+                    time.sleep(0.3 + (i % 3) * 0.2)
+                
+                print("   ✅ Movimenti mouse simulati")
+            except Exception as e:
+                print(f"   ⚠️  Movimenti mouse saltati: {e}")
             
-            driver.execute_script('window.scrollTo({top: 0, behavior: "smooth"});')
-            time.sleep(2)
+            # Scroll naturale multi-step
+            scroll_positions = [0, 200, 500, 800, 1200, 1600, 2000, 1600, 1200, 800, 400, 0]
+            
+            for i, pos in enumerate(scroll_positions):
+                driver.execute_script(f'window.scrollTo({{top: {pos}, behavior: "smooth"}});')
+                wait_time = 1.5 + (i % 3) * 0.5
+                print(f"   📜 Scroll a {pos}px (attesa {wait_time:.1f}s)")
+                time.sleep(wait_time)
+            
+            # Click su elementi casuali (non interattivi)
+            try:
+                # Cerca div o span sicuri
+                safe_elements = driver.find_elements(By.CSS_SELECTOR, 'div.content, span, p')
+                if len(safe_elements) > 5:
+                    import random
+                    element = random.choice(safe_elements[:10])
+                    driver.execute_script("arguments[0].click();", element)
+                    print("   🖱️  Click casuale eseguito")
+                    time.sleep(2)
+            except:
+                pass
+            
+            # Attesa finale
+            print("   ⏳ Attesa finale 10 secondi...")
+            time.sleep(10)
         
         def handle_cookie_banner(driver):
             """Gestisci cookie banner se presente"""
@@ -351,11 +513,17 @@ jobs:
                 print(f"\n🌐 Navigazione a: {target_url}")
                 driver.get(target_url)
                 
-                # Attendi caricamento
+                # Attendi caricamento iniziale
                 wait_for_page_load(driver)
-                print(f"✅ Pagina caricata: {driver.title}")
+                print(f"📄 Pagina caricata: {driver.title}")
                 
-                # Comportamento umano
+                # IMPORTANTE: Controlla e attendi risoluzione CAPTCHA
+                if not wait_for_captcha_or_page(driver, max_wait=180):
+                    print("❌ CAPTCHA non superato in tempo utile")
+                    print("💡 Suggerimento: Cloudflare a volte risolve automaticamente dopo 30-60s")
+                    raise Exception("CAPTCHA blocking")
+                
+                # Comportamento umano PRIMA di fare qualsiasi cosa
                 simulate_human_behavior(driver)
                 
                 # Cookie banner
@@ -458,6 +626,7 @@ jobs:
         path: |
           scraped_data/
           error_screenshot.png
+          captcha_screenshot.png
         retention-days: 90
     
     - name: Commit and push results
