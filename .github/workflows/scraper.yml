@@ -6,8 +6,9 @@ on:
     paths:
       - 'scrape.json'
       - 'scraper.js'
-  schedule:
-    - cron: '0 22 * * *'
+  #disabled crons
+  #schedule:
+  #  - cron: '0 22 * * *'
 
 permissions:
     contents: write  # Permette push al repository
