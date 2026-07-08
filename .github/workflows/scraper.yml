@@ -1,30 +1,59 @@
 name: Deep Exec v31 Claude - Immobiliare.it Scraper
 
+
 on:
   workflow_dispatch:
   push:
     paths:
       - 'scrape.json'
       - 'scraper.js'
+  # Esegue ogni giorno alle 17:00 UTC (18:00 CET / 19:00 CEST)
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 17 * * *'
 
-# Permessi necessari per push
 permissions:
-  contents: write
-  actions: read
+    contents: write
+    actions: read
 
 jobs:
-  deep_exec:
+  # Job leggero per decidere se oggi è il giorno della settimana in cui eseguire lo scraping
+  check_day:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    outputs:
+      should_run: ${{ steps.week_check.outputs.run }}
+    steps:
+      - name: Check if today is the weekly run day
+        id: week_check
+        run: |
+          WEEK=$(date +%V)
+          TARGET_DAY=$(( WEEK % 7 + 1 ))    # 1=Lunedì ... 7=Domenica
+          TODAY_DAY=$(date +%u)
+          echo "Week: $WEEK, Target day: $TARGET_DAY, Today: $TODAY_DAY"
+          if [ "$TODAY_DAY" -eq "$TARGET_DAY" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+
+  deep_exec:
+    needs: check_day
+    if: needs.check_day.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 ore massime (ritardo + scraping)
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
-    
+
+    - name: Random delay to spread execution between 18:00 and 24:00 (CET/CEST)
+      run: |
+        MAX_DELAY=18000   # 5 ore in secondi
+        DELAY=$(( RANDOM % (MAX_DELAY + 1) ))
+        echo "🕒 Ritardo casuale: ${DELAY}s ($(($DELAY/60)) minuti)"
+        sleep $DELAY
+
     - name: Verify required files
       run: |
         echo "📂 Verifica file necessari per deep_exec..."
