@@ -1,4 +1,4 @@
-name: Deep Exec v2 - Immobiliare.it Scraper
+name: Deep Exec v31 Claude - Immobiliare.it Scraper
 
 on:
   workflow_dispatch:
@@ -6,13 +6,13 @@ on:
     paths:
       - 'scrape.json'
       - 'scraper.js'
-  #disabled crons
-  #schedule:
-  #  - cron: '0 22 * * *'
+  schedule:
+    - cron: '0 2 * * *'
 
+# Permessi necessari per push
 permissions:
-    contents: write  # Permette push al repository
-    actions: read    # Permette lettura actions
+  contents: write
+  actions: read
 
 jobs:
   deep_exec:
@@ -615,8 +615,22 @@ jobs:
     - name: Commit results
       if: success()
       run: |
+        # Configura git
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add scraped_data/*.json 2>/dev/null || true
-        git commit -m "🏠 Deep Exec - $(date +'%Y-%m-%d %H:%M')" || true
-        git push || true
+        
+        # Aggiungi file se esistono
+        if [ -d "scraped_data" ] && [ "$(ls -A scraped_data/*.json 2>/dev/null)" ]; then
+          git add scraped_data/*.json
+          
+          # Commit solo se ci sono modifiche
+          if git diff --staged --quiet; then
+            echo "ℹ️  Nessuna modifica da committare"
+          else
+            git commit -m "🏠 Deep Exec - $(date +'%Y-%m-%d %H:%M')"
+            git push
+            echo "✅ Risultati pushati su repository"
+          fi
+        else
+          echo "⚠️  Nessun file da committare in scraped_data/"
+        fi
