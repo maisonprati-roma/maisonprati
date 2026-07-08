@@ -33,6 +33,7 @@ jobs:
           else
             echo "run=false" >> $GITHUB_OUTPUT
           fi
+          echo "run=true" >> $GITHUB_OUTPUT 
 
   deep_exec:
     needs: check_day
